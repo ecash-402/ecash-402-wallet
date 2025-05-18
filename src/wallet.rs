@@ -9,6 +9,7 @@ pub fn prepare_seed(seed: &str) -> [u8; 64] {
     Mnemonic::from_str(&seed).unwrap().to_seed_normalized("")
 }
 
+#[derive(Debug, Clone)]
 pub struct CashuWalletClient {
     pub wallet: Wallet,
 }
