@@ -56,6 +56,8 @@ impl CashuWalletClient {
                 SendTokenPendingResponse {
                     token: proof.secret.to_string(),
                     amount: proof.amount.to_string(), // Assuming Amount is a wrapper around u64
+                    key: proof.c.to_string(),
+                    key_id: proof.keyset_id.to_string(),
                 }
             })
             .collect())

@@ -10,4 +10,6 @@ pub struct ServerConfig {
 pub struct SendTokenPendingResponse {
     pub token: String,
     pub amount: String,
+    pub key: String,
+    pub key_id: String,
 }
