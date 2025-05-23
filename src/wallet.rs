@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::{error::Result, models::SendTokenPendingResponse};
 use std::{str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
@@ -47,10 +47,18 @@ impl CashuWalletClient {
         Ok(self.wallet.total_balance().await?.to_string())
     }
 
-    pub async fn pending(&self) -> Result<String> {
-        let pendings = self.wallet.get_pending_spent_proofs().await?;
-        println!("{:?}", pendings);
-        Ok("test".to_string())
+    pub async fn pending(&self) -> Result<Vec<SendTokenPendingResponse>> {
+        let proofs = self.wallet.get_pending_spent_proofs().await?;
+
+        Ok(proofs
+            .into_iter()
+            .map(|proof| {
+                SendTokenPendingResponse {
+                    token: proof.secret.to_string(),
+                    amount: proof.amount.to_string(), // Assuming Amount is a wrapper around u64
+                }
+            })
+            .collect())
     }
 
     fn wallet(mint_url: &str, s: Mnemonic) -> Self {
