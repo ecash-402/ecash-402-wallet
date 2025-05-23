@@ -81,4 +81,12 @@ impl CashuWalletClient {
             wallet: builder.build().unwrap(),
         }
     }
+
+    pub async fn redeem_pendings(&self) -> Result<()> {
+        let proofs = self.wallet.get_pending_spent_proofs().await?;
+        self.wallet
+            .receive_proofs(proofs, ReceiveOptions::default(), None)
+            .await?;
+        Ok(())
+    }
 }
