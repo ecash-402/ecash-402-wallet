@@ -15,28 +15,15 @@ pub struct CashuWalletClient {
 }
 
 impl CashuWalletClient {
-    pub fn new(mint_url: &str, seed: Option<&str>) -> Self {
-        let home_dir = home::home_dir().unwrap();
-        let localstore = WalletRedbDatabase::new(&home_dir.join("cdk_wallet.redb")).unwrap();
-        let s = if let Some(seed) = seed {
-            Mnemonic::from_str(seed).unwrap()
-        } else {
-            Mnemonic::generate(12).unwrap()
-        };
+    pub fn from_seed(mint_url: &str, seed: &str) -> Self {
+        let s = Mnemonic::from_str(seed).unwrap();
+        CashuWalletClient::wallet(mint_url, s)
+    }
 
-        let seed = s.to_seed_normalized("");
-        let mint_url = cdk::mint_url::MintUrl::from_str(mint_url).unwrap();
-        let mut builder = WalletBuilder::new()
-            .mint_url(mint_url.clone())
-            .unit(cdk::nuts::CurrencyUnit::Msat)
-            .localstore(Arc::new(localstore))
-            .seed(&seed);
-        let http_client = HttpClient::new(mint_url);
-        builder = builder.client(http_client);
-
-        Self {
-            wallet: builder.build().unwrap(),
-        }
+    pub fn new(mint_url: &str, seed: &mut String) -> Self {
+        let s = Mnemonic::generate(12).unwrap();
+        seed.push_str(&s.to_string());
+        CashuWalletClient::wallet(mint_url, s)
     }
 
     pub async fn send(&self, amount: u64) -> Result<String> {
@@ -64,5 +51,24 @@ impl CashuWalletClient {
         let pendings = self.wallet.get_pending_spent_proofs().await?;
         println!("{:?}", pendings);
         Ok("test".to_string())
+    }
+
+    fn wallet(mint_url: &str, s: Mnemonic) -> Self {
+        let home_dir = home::home_dir().unwrap();
+        let localstore = WalletRedbDatabase::new(&home_dir.join("cdk_wallet.redb")).unwrap();
+
+        let seed = s.to_seed_normalized("");
+        let mint_url = cdk::mint_url::MintUrl::from_str(mint_url).unwrap();
+        let mut builder = WalletBuilder::new()
+            .mint_url(mint_url.clone())
+            .unit(cdk::nuts::CurrencyUnit::Msat)
+            .localstore(Arc::new(localstore))
+            .seed(&seed);
+        let http_client = HttpClient::new(mint_url);
+        builder = builder.client(http_client);
+
+        Self {
+            wallet: builder.build().unwrap(),
+        }
     }
 }
