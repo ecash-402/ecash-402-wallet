@@ -15,10 +15,15 @@ pub struct CashuWalletClient {
 }
 
 impl CashuWalletClient {
-    pub fn new(mint_url: &str, _seed: Option<&str>) -> Self {
+    pub fn new(mint_url: &str, seed: Option<&str>) -> Self {
         let home_dir = home::home_dir().unwrap();
         let localstore = WalletRedbDatabase::new(&home_dir.join("cdk_wallet.redb")).unwrap();
-        let s = Mnemonic::generate(12).unwrap();
+        let s = if let Some(seed) = seed {
+            Mnemonic::from_str(seed).unwrap()
+        } else {
+            Mnemonic::generate(12).unwrap()
+        };
+
         let seed = s.to_seed_normalized("");
         let mint_url = cdk::mint_url::MintUrl::from_str(mint_url).unwrap();
         let mut builder = WalletBuilder::new()
