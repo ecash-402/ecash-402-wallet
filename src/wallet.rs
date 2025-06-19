@@ -1,12 +1,14 @@
-use crate::{error::Result, models::SendTokenPendingResponse};
+use crate::{error::{Error, Result}, models::SendTokenPendingResponse};
 use std::{str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use cdk::wallet::{HttpClient, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
 use cdk_redb::WalletRedbDatabase;
 
-pub fn prepare_seed(seed: &str) -> [u8; 64] {
-    Mnemonic::from_str(&seed).unwrap().to_seed_normalized("")
+pub fn prepare_seed(seed: &str) -> Result<[u8; 64]> {
+    let mnemonic = Mnemonic::from_str(&seed)
+        .map_err(|_| Error::custom("Invalid mnemonic seed"))?;
+    Ok(mnemonic.to_seed_normalized(""))
 }
 
 #[derive(Debug, Clone)]
@@ -15,13 +17,15 @@ pub struct CashuWalletClient {
 }
 
 impl CashuWalletClient {
-    pub fn from_seed(mint_url: &str, seed: &str) -> Self {
-        let s = Mnemonic::from_str(seed).unwrap();
+    pub fn from_seed(mint_url: &str, seed: &str) -> Result<Self> {
+        let s = Mnemonic::from_str(seed)
+            .map_err(|_| Error::custom("Invalid mnemonic seed"))?;
         CashuWalletClient::wallet(mint_url, s)
     }
 
-    pub fn new(mint_url: &str, seed: &mut String) -> Self {
-        let s = Mnemonic::generate(12).unwrap();
+    pub fn new(mint_url: &str, seed: &mut String) -> Result<Self> {
+        let s = Mnemonic::generate(12)
+            .map_err(|_| Error::custom("Failed to generate mnemonic"))?;
         seed.push_str(&s.to_string());
         CashuWalletClient::wallet(mint_url, s)
     }
@@ -38,8 +42,7 @@ impl CashuWalletClient {
         Ok(self
             .wallet
             .receive(token, ReceiveOptions::default())
-            .await
-            .unwrap()
+            .await?
             .to_string())
     }
 
@@ -63,12 +66,14 @@ impl CashuWalletClient {
             .collect())
     }
 
-    fn wallet(mint_url: &str, s: Mnemonic) -> Self {
-        let home_dir = home::home_dir().unwrap();
-        let localstore = WalletRedbDatabase::new(&home_dir.join("cdk_wallet.redb")).unwrap();
+    fn wallet(mint_url: &str, s: Mnemonic) -> Result<Self> {
+        let home_dir = home::home_dir()
+            .ok_or_else(|| Error::custom("Could not determine home directory"))?;
+        let localstore = WalletRedbDatabase::new(&home_dir.join("cdk_wallet.redb"))?;
 
         let seed = s.to_seed_normalized("");
-        let mint_url = cdk::mint_url::MintUrl::from_str(mint_url).unwrap();
+        let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)
+            .map_err(|_| Error::custom("Invalid mint URL"))?;
         let mut builder = WalletBuilder::new()
             .mint_url(mint_url.clone())
             .unit(cdk::nuts::CurrencyUnit::Msat)
@@ -77,9 +82,9 @@ impl CashuWalletClient {
         let http_client = HttpClient::new(mint_url);
         builder = builder.client(http_client);
 
-        Self {
-            wallet: builder.build().unwrap(),
-        }
+        Ok(Self {
+            wallet: builder.build()?,
+        })
     }
 
     pub async fn redeem_pendings(&self) -> Result<()> {
