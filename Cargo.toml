@@ -1,6 +1,6 @@
 [package]
 name = "ecash-402-wallet"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "ecash 402 wallet"
 license = "GPL-3.0"
