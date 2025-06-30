@@ -709,7 +709,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "ecash-402-wallet"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "bip39",
  "cdk",
