@@ -6,7 +6,7 @@ use std::{str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use cdk::wallet::{HttpClient, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
-use cdk_sqlite::WalletSqliteDatabase;
+use cdk_redb::WalletRedbDatabase;
 
 pub fn prepare_seed(seed: &str) -> Result<[u8; 64]> {
     let mnemonic = Mnemonic::from_str(&seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
@@ -69,9 +69,7 @@ impl CashuWalletClient {
     async fn wallet(mint_url: &str, s: Mnemonic, db_name: &str) -> Result<Self> {
         let home_dir =
             home::home_dir().ok_or_else(|| Error::custom("Could not determine home directory"))?;
-        let localstore = WalletSqliteDatabase::new(&home_dir.join(db_name))
-            .await
-            .unwrap();
+        let localstore = WalletRedbDatabase::new(&home_dir.join(db_name)).unwrap();
 
         let seed = s.to_seed_normalized("");
         let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)
