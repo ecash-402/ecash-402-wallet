@@ -8,8 +8,9 @@ license = "GPL-3.0"
 [dependencies]
 serde = {version = "1.0", features = ["derive"]}
 derive_more = {version = "2.0", features = ["from"]}
-cdk = { version="0.11", default-features = false, features = ["wallet", "mint"] }
-cdk-sqlite = { version="0.11", default-features = false, features = ["wallet"] }
+cdk = { version="0.9", default-features = false, features = ["wallet"] }
+cdk-sqlite = { version="0.9", default-features = false, features = ["wallet"] }
 
 bip39 = { version = "2.1.0", features = ["rand"] }
 home = "0.5.11"
+
