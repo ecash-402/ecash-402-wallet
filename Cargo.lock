@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "ecash-402-wallet"
-version = "0.1.10"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "bip39",
