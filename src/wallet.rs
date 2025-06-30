@@ -6,7 +6,7 @@ use std::{str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use cdk::wallet::{HttpClient, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
-use cdk_redb::WalletRedbDatabase;
+use cdk_sqlite::WalletSqliteDatabase;
 
 pub fn prepare_seed(seed: &str) -> Result<[u8; 64]> {
     let mnemonic = Mnemonic::from_str(&seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
@@ -19,15 +19,15 @@ pub struct CashuWalletClient {
 }
 
 impl CashuWalletClient {
-    pub fn from_seed(mint_url: &str, seed: &str, db_name: &str) -> Result<Self> {
+    pub async fn from_seed(mint_url: &str, seed: &str, db_name: &str) -> Result<Self> {
         let s = Mnemonic::from_str(seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
-        CashuWalletClient::wallet(mint_url, s, db_name)
+        CashuWalletClient::wallet(mint_url, s, db_name).await
     }
 
-    pub fn new(mint_url: &str, seed: &mut String, db_name: &str) -> Result<Self> {
+    pub async fn new(mint_url: &str, seed: &mut String, db_name: &str) -> Result<Self> {
         let s = Mnemonic::generate(12).map_err(|_| Error::custom("Failed to generate mnemonic"))?;
         seed.push_str(&s.to_string());
-        CashuWalletClient::wallet(mint_url, s, db_name)
+        CashuWalletClient::wallet(mint_url, s, db_name).await
     }
 
     pub async fn send(&self, amount: u64) -> Result<String> {
@@ -66,10 +66,12 @@ impl CashuWalletClient {
             .collect())
     }
 
-    fn wallet(mint_url: &str, s: Mnemonic, db_name: &str) -> Result<Self> {
+    async fn wallet(mint_url: &str, s: Mnemonic, db_name: &str) -> Result<Self> {
         let home_dir =
             home::home_dir().ok_or_else(|| Error::custom("Could not determine home directory"))?;
-        let localstore = WalletRedbDatabase::new(&home_dir.join(db_name))?;
+        let localstore = WalletSqliteDatabase::new(&home_dir.join(db_name))
+            .await
+            .unwrap();
 
         let seed = s.to_seed_normalized("");
         let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)
