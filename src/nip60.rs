@@ -1,12 +1,16 @@
 use crate::error::Result;
 use base64::Engine;
+use cdk::mint_url::MintUrl;
+use cdk::nuts::CurrencyUnit;
+use cdk::nuts::Proofs;
+
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::Duration;
 
-use cdk::nuts::nut00::{Proof, Token};
+use cdk::nuts::nut00::Token;
 
 pub mod kinds {
     use nostr_sdk::Kind;
@@ -32,24 +36,9 @@ pub struct WalletConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenData {
     pub mint: String,
-    pub proofs: Vec<CashuProof>,
+    pub proofs: Proofs,
     #[serde(default)]
     pub del: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CashuProof {
-    pub id: String,
-    pub amount: u64,
-    pub secret: String,
-    #[serde(rename = "C")]
-    pub c: String,
-}
-
-impl CashuProof {
-    pub fn proof_id(&self) -> String {
-        format!("{}:{}", self.secret, self.c)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +60,7 @@ pub struct TokenEvent {
 #[derive(Debug, Clone)]
 pub struct WalletState {
     pub balance: u64,
-    pub proofs: Vec<CashuProof>,
+    pub proofs: Proofs,
     pub proof_to_event_id: HashMap<String, String>,
 }
 
@@ -209,12 +198,12 @@ impl Nip60Wallet {
         &self,
         amount: u64,
         spent_token_ids: Vec<EventId>,
-        unspent_proofs: Vec<CashuProof>,
+        unspent_proofs: Proofs,
     ) -> Result<()> {
         let mut new_token_event_id = None;
         if !unspent_proofs.is_empty() {
             new_token_event_id = Some(
-                self.create_rollover_token_event(&unspent_proofs, &spent_token_ids)
+                self.create_rollover_token_event(unspent_proofs, &spent_token_ids)
                     .await?,
             );
         }
@@ -255,8 +244,8 @@ impl Nip60Wallet {
             .mint_url()
             .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
             .to_string();
-        let proofs = self.convert_proofs_to_cashu(&parsed_token.proofs())?;
-        let token_event_id = self.create_token_event(&mint_url, &proofs, vec![]).await?;
+        let proofs = parsed_token.proofs();
+        let token_event_id = self.create_token_event(&mint_url, proofs, vec![]).await?;
         created_event_ids.push(token_event_id);
 
         let event_refs: Vec<_> = created_event_ids
@@ -290,21 +279,6 @@ impl Nip60Wallet {
             .map(|proof| proof.amount.to_string().parse::<u64>().unwrap())
             .sum();
         Ok(amount)
-    }
-
-    fn convert_proofs_to_cashu(&self, proofs: &[Proof]) -> Result<Vec<CashuProof>> {
-        let mut cashu_proofs = Vec::new();
-
-        for proof in proofs {
-            cashu_proofs.push(CashuProof {
-                id: proof.keyset_id.to_string(),
-                amount: proof.amount.to_string().parse::<u64>().unwrap(),
-                secret: proof.secret.to_string(),
-                c: proof.c.to_string(),
-            });
-        }
-
-        Ok(cashu_proofs)
     }
 
     pub async fn calculate_balance(&self) -> Result<u64> {
@@ -389,7 +363,7 @@ impl Nip60Wallet {
             }
 
             for proof in &event.data.proofs {
-                let proof_id = proof.proof_id();
+                let proof_id = proof.keyset_id.to_string();
                 if proof_seen.contains(&proof_id) {
                     continue;
                 }
@@ -399,7 +373,10 @@ impl Nip60Wallet {
             }
         }
 
-        let balance = all_proofs.iter().map(|p| p.amount).sum();
+        let balance = all_proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap())
+            .sum();
 
         Ok(WalletState {
             balance,
@@ -413,7 +390,7 @@ impl Nip60Wallet {
         Ok(state.balance)
     }
 
-    pub async fn get_unspent_proofs(&self) -> Result<Vec<CashuProof>> {
+    pub async fn get_unspent_proofs(&self) -> Result<Proofs> {
         let state = self.fetch_wallet_state().await?;
         Ok(state.proofs)
     }
@@ -462,10 +439,10 @@ impl Nip60Wallet {
     pub async fn fetch_token_events(&self) -> Result<Vec<TokenEvent>> {
         let state = self.fetch_wallet_state().await?;
 
-        let mut events_map: HashMap<String, (Vec<CashuProof>, String)> = HashMap::new();
+        let mut events_map: HashMap<String, (Proofs, String)> = HashMap::new();
 
         for proof in state.proofs {
-            if let Some(event_id) = state.proof_to_event_id.get(&proof.proof_id()) {
+            if let Some(event_id) = state.proof_to_event_id.get(&proof.keyset_id.to_string()) {
                 events_map
                     .entry(event_id.clone())
                     .or_insert_with(|| (Vec::new(), String::new()))
@@ -498,7 +475,7 @@ impl Nip60Wallet {
     async fn create_token_event(
         &self,
         mint: &str,
-        proofs: &[CashuProof],
+        proofs: Proofs,
         del: Vec<String>,
     ) -> Result<EventId> {
         let token_data = TokenData {
@@ -541,7 +518,7 @@ impl Nip60Wallet {
 
     async fn create_rollover_token_event(
         &self,
-        unspent_proofs: &[CashuProof],
+        unspent_proofs: Proofs,
         deleted_token_ids: &[EventId],
     ) -> Result<EventId> {
         let del: Vec<String> = deleted_token_ids.iter().map(|id| id.to_hex()).collect();
@@ -752,10 +729,10 @@ impl Nip60Wallet {
 
         let mint_url = selected_proofs
             .first()
-            .map(|p| p.id.clone())
+            .map(|p| p.keyset_id.to_string().clone())
             .unwrap_or_else(|| self.mints.first().cloned().unwrap_or_default());
 
-        let token_string = self.create_cashu_token_string(&mint_url, &selected_proofs, memo)?;
+        let token_string = self.create_cashu_token_string(&mint_url, selected_proofs, memo)?;
 
         let signer = self
             .client
@@ -830,7 +807,7 @@ impl Nip60Wallet {
     fn create_cashu_token_string(
         &self,
         mint_url: &str,
-        proofs: &[CashuProof],
+        proofs: Proofs,
         memo: Option<String>,
     ) -> Result<String> {
         let token_data = serde_json::json!({
@@ -843,6 +820,13 @@ impl Nip60Wallet {
             crate::error::Error::custom(&format!("Token serialization failed: {}", e))
         })?;
 
+        let token = Token::new(
+            MintUrl::from_str(mint_url).unwrap(),
+            proofs,
+            memo,
+            CurrencyUnit::Msat,
+        );
+
         Ok(format!(
             "cashuA{}",
             base64::engine::general_purpose::STANDARD.encode(token_json)
@@ -852,7 +836,7 @@ impl Nip60Wallet {
     async fn select_proofs_for_amount(
         &self,
         amount: u64,
-    ) -> Result<(Vec<CashuProof>, Vec<CashuProof>, Vec<EventId>)> {
+    ) -> Result<(Proofs, Proofs, Vec<EventId>)> {
         let state = self.fetch_wallet_state().await?;
 
         let mut selected_proofs = Vec::new();
@@ -866,9 +850,11 @@ impl Nip60Wallet {
         for proof in available_proofs {
             if current_amount < amount {
                 selected_proofs.push(proof.clone());
-                current_amount += proof.amount;
+                current_amount += proof.amount.to_string().parse::<u64>().unwrap();
 
-                if let Some(event_id_str) = state.proof_to_event_id.get(&proof.proof_id()) {
+                if let Some(event_id_str) =
+                    state.proof_to_event_id.get(&proof.keyset_id.to_string())
+                {
                     if let Ok(event_id) = EventId::from_hex(event_id_str) {
                         spent_event_ids.insert(event_id);
                     }
