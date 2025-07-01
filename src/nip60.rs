@@ -545,15 +545,67 @@ impl Nip60Wallet {
                 .await
                 .map_err(|e| crate::error::Error::custom(&format!("Decryption failed: {}", e)))?;
 
-            let spending_history: SpendingHistory =
-                serde_json::from_str(&decrypted).map_err(|e| {
-                    crate::error::Error::custom(&format!("Invalid spending history: {}", e))
-                })?;
+            // Try to parse as proper SpendingHistory first
+            let spending_history = match serde_json::from_str::<SpendingHistory>(&decrypted) {
+                Ok(history) => history,
+                Err(_) => {
+                    // If that fails, try to parse as legacy array format
+                    match serde_json::from_str::<Vec<Vec<String>>>(&decrypted) {
+                        Ok(legacy_data) => {
+                            // Convert legacy format to SpendingHistory
+                            self.parse_legacy_spending_history(legacy_data)?
+                        }
+                        Err(e) => {
+                            return Err(crate::error::Error::custom(&format!(
+                                "Invalid spending history format: {} - Content: {}",
+                                e, decrypted
+                            )));
+                        }
+                    }
+                }
+            };
 
             history.push(spending_history);
         }
 
         Ok(history)
+    }
+
+    /// Parse legacy spending history format into SpendingHistory struct
+    fn parse_legacy_spending_history(
+        &self,
+        legacy_data: Vec<Vec<String>>,
+    ) -> Result<SpendingHistory> {
+        let mut direction = String::new();
+        let mut amount = String::new();
+        let mut events = Vec::new();
+
+        for item in legacy_data {
+            if item.len() >= 2 {
+                match item[0].as_str() {
+                    "direction" => direction = item[1].clone(),
+                    "amount" => amount = item[1].clone(),
+                    "e" => {
+                        // This is an event reference
+                        if item.len() >= 4 {
+                            events.push((
+                                item[0].clone(), // "e"
+                                item[1].clone(), // event_id
+                                item[2].clone(), // relay (usually empty)
+                                item[3].clone(), // marker
+                            ));
+                        }
+                    }
+                    _ => {} // Ignore unknown fields
+                }
+            }
+        }
+
+        Ok(SpendingHistory {
+            direction,
+            amount,
+            events,
+        })
     }
 
     /// Get wallet statistics from Nostr events
@@ -578,9 +630,9 @@ impl Nip60Wallet {
     ) -> Result<EventId> {
         // Get current token events to find proofs to spend
         let token_events = self.fetch_token_events().await?;
-        
+
         // Select proofs to spend for the requested amount
-        let (selected_proofs, remaining_proofs, spent_event_ids) = 
+        let (selected_proofs, remaining_proofs, spent_event_ids) =
             self.select_proofs_for_amount(&token_events, amount)?;
 
         if selected_proofs.is_empty() {
@@ -592,7 +644,7 @@ impl Nip60Wallet {
             .first()
             .map(|p| p.id.clone()) // Using id as mint reference for now
             .unwrap_or_else(|| self.mints.first().cloned().unwrap_or_default());
-            
+
         let token_string = self.create_cashu_token_string(&mint_url, &selected_proofs, memo)?;
 
         // Send the token via encrypted DM
