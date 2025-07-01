@@ -57,6 +57,8 @@ pub struct SpendingHistory {
     pub direction: String,
     pub amount: String,
     pub events: Vec<(String, String, String, String)>,
+    #[serde(default)]
+    pub created_at: Option<u64>, // Unix timestamp when this spending event was created
 }
 
 #[derive(Debug, Clone)]
@@ -579,6 +581,7 @@ impl Nip60Wallet {
             direction: direction.to_string(),
             amount: amount.to_string(),
             events: event_refs.clone(),
+            created_at: Some(Timestamp::now().as_u64()),
         };
 
         let content_json = serde_json::to_string(&history)
@@ -655,7 +658,7 @@ impl Nip60Wallet {
                 .await
                 .map_err(|e| crate::error::Error::custom(&format!("Decryption failed: {}", e)))?;
 
-            let spending_history = match serde_json::from_str::<SpendingHistory>(&decrypted) {
+            let mut spending_history = match serde_json::from_str::<SpendingHistory>(&decrypted) {
                 Ok(history) => history,
                 Err(_) => match serde_json::from_str::<Vec<Vec<String>>>(&decrypted) {
                     Ok(legacy_data) => self.parse_legacy_spending_history(legacy_data)?,
@@ -668,8 +671,22 @@ impl Nip60Wallet {
                 },
             };
 
+            // If the spending history doesn't have a timestamp, use the event's creation time
+            if spending_history.created_at.is_none() {
+                spending_history.created_at = Some(event.created_at.as_u64());
+            }
+
             history.push(spending_history);
         }
+
+        history.sort_by(|a, b| {
+            match (a.created_at, b.created_at) {
+                (Some(a_time), Some(b_time)) => b_time.cmp(&a_time), // Newest first
+                (Some(_), None) => std::cmp::Ordering::Less,         // Some before None
+                (None, Some(_)) => std::cmp::Ordering::Greater,      // None after Some
+                (None, None) => std::cmp::Ordering::Equal,           // Equal if both None
+            }
+        });
 
         Ok(history)
     }
@@ -706,6 +723,7 @@ impl Nip60Wallet {
             direction,
             amount,
             events,
+            created_at: None,
         })
     }
 
