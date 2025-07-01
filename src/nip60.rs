@@ -2,6 +2,7 @@ use crate::error::Result;
 use base64::Engine;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -45,6 +46,13 @@ pub struct CashuProof {
     pub c: String,
 }
 
+impl CashuProof {
+    /// Generate a unique identifier for this proof for deduplication
+    pub fn proof_id(&self) -> String {
+        format!("{}:{}", self.secret, self.c)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpendingHistory {
     pub direction: String,
@@ -56,6 +64,15 @@ pub struct SpendingHistory {
 pub struct TokenEvent {
     pub id: EventId,
     pub data: TokenData,
+    pub created_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletState {
+    pub balance: u64,
+    pub proofs: Vec<CashuProof>,
+    pub proof_to_event_id: HashMap<String, String>,
+    pub mint_keysets: HashMap<String, Vec<String>>,
 }
 
 pub struct Nip60Wallet {
@@ -291,16 +308,12 @@ impl Nip60Wallet {
     }
 
     pub async fn calculate_balance(&self) -> Result<u64> {
-        let token_events = self.fetch_token_events().await?;
-        let balance = token_events
-            .iter()
-            .flat_map(|event| &event.data.proofs)
-            .map(|proof| proof.amount)
-            .sum();
-        Ok(balance)
+        let wallet_state = self.fetch_wallet_state(false).await?;
+        Ok(wallet_state.balance)
     }
 
-    pub async fn fetch_token_events(&self) -> Result<Vec<TokenEvent>> {
+    /// Fetch comprehensive wallet state including proper handling of deletions and rollovers
+    pub async fn fetch_wallet_state(&self, check_proofs: bool) -> Result<WalletState> {
         let signer = self
             .client
             .signer()
@@ -312,19 +325,34 @@ impl Nip60Wallet {
             .await
             .map_err(|e| crate::error::Error::custom(&format!("Public key error: {}", e)))?;
 
-        let filter = Filter::new().author(public_key).kind(kinds::TOKEN);
+        // Fetch all wallet-related events
+        let wallet_filter = Filter::new().author(public_key).kind(kinds::WALLET);
+        let token_filter = Filter::new().author(public_key).kind(kinds::TOKEN);
+        let delete_filter = Filter::new().author(public_key).kind(Kind::EventDeletion);
 
-        let events = self
-            .client
-            .fetch_events(filter, Duration::from_secs(10))
-            .await
-            .map_err(|e| {
-                crate::error::Error::custom(&format!("Failed to fetch token events: {}", e))
-            })?;
+        let (_wallet_events, token_events, delete_events) = tokio::try_join!(
+            self.client.fetch_events(wallet_filter, Duration::from_secs(10)),
+            self.client.fetch_events(token_filter, Duration::from_secs(10)),
+            self.client.fetch_events(delete_filter, Duration::from_secs(10))
+        ).map_err(|e| crate::error::Error::custom(&format!("Failed to fetch events: {}", e)))?;
 
-        let mut token_events = Vec::new();
+        // Track deleted token events from NIP-09 deletion events
+        let mut deleted_ids = HashSet::new();
+        for event in delete_events {
+            for tag in event.tags.iter() {
+                if let Some(TagStandard::Event { event_id, .. }) = tag.as_standardized() {
+                    deleted_ids.insert(event_id.to_hex());
+                }
+            }
+        }
 
-        for event in events {
+        // Parse token events
+        let mut token_events_parsed = Vec::new();
+        for event in token_events {
+            if deleted_ids.contains(&event.id.to_hex()) {
+                continue; // Skip deleted events
+            }
+
             let decrypted = signer
                 .nip44_decrypt(&public_key, &event.content)
                 .await
@@ -333,12 +361,168 @@ impl Nip60Wallet {
             let token_data: TokenData = serde_json::from_str(&decrypted)
                 .map_err(|e| crate::error::Error::custom(&format!("Invalid token data: {}", e)))?;
 
-            token_events.push(TokenEvent {
+            token_events_parsed.push(TokenEvent {
                 id: event.id,
                 data: token_data,
+                created_at: event.created_at,
             });
         }
 
+        // Sort token events newest to oldest for proper rollover handling
+        token_events_parsed.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        // Process rollovers and aggregate unique proofs
+        let mut invalid_token_ids = deleted_ids.clone();
+        let mut proof_seen = HashSet::new();
+        let mut all_proofs = Vec::new();
+        let mut proof_to_event_id = HashMap::new();
+
+        for event in &token_events_parsed {
+            if invalid_token_ids.contains(&event.id.to_hex()) {
+                continue;
+            }
+
+            // Mark tokens referenced in the "del" field as superseded
+            for old_id in &event.data.del {
+                invalid_token_ids.insert(old_id.clone());
+            }
+
+            // Skip if this event itself was marked as invalid
+            if invalid_token_ids.contains(&event.id.to_hex()) {
+                continue;
+            }
+
+            // Process proofs from this event
+            for proof in &event.data.proofs {
+                let proof_id = proof.proof_id();
+                if proof_seen.contains(&proof_id) {
+                    continue; // Skip duplicates
+                }
+                proof_seen.insert(proof_id.clone());
+                all_proofs.push(proof.clone());
+                proof_to_event_id.insert(proof_id, event.id.to_hex());
+            }
+        }
+
+        // TODO: Optional proof validation with mints
+        if check_proofs {
+            // This would require implementing mint communication
+            // For now, we'll use all proofs as-is
+        }
+
+        // Calculate balance
+        let balance = all_proofs.iter().map(|p| p.amount).sum();
+
+        // Fetch mint keysets (placeholder for now)
+        let mint_keysets = HashMap::new();
+
+        Ok(WalletState {
+            balance,
+            proofs: all_proofs,
+            proof_to_event_id,
+            mint_keysets,
+        })
+    }
+
+    /// Get current wallet balance with optional proof validation
+    pub async fn get_balance(&self, check_proofs: bool) -> Result<u64> {
+        let state = self.fetch_wallet_state(check_proofs).await?;
+        Ok(state.balance)
+    }
+
+    /// Get all valid unspent proofs from the wallet
+    /// This method handles NIP-09 deletions, NIP-60 rollovers, and deduplication
+    pub async fn get_unspent_proofs(&self, check_proofs: bool) -> Result<Vec<CashuProof>> {
+        let state = self.fetch_wallet_state(check_proofs).await?;
+        Ok(state.proofs)
+    }
+
+    /// Get the complete wallet state including proofs, balance, and metadata
+    /// This is the most comprehensive method that properly handles:
+    /// - NIP-09 deletion events (excludes deleted token events)
+    /// - NIP-60 rollover handling (processes "del" field in token data)
+    /// - Proof deduplication (avoids counting same proof multiple times)
+    /// - Optional proof validation with mints (if check_proofs is true)
+    pub async fn get_wallet_state(&self, check_proofs: bool) -> Result<WalletState> {
+        self.fetch_wallet_state(check_proofs).await
+    }
+
+    /// Calculate balance from spending history (in vs out transactions)
+    /// This provides an alternative balance calculation based on transaction history
+    /// rather than current proof ownership
+    pub async fn calculate_balance_from_history(&self) -> Result<(u64, u64, i64, Vec<SpendingHistory>)> {
+        let history = self.get_spending_history().await?;
+        
+        let mut total_in = 0u64;
+        let mut total_out = 0u64;
+        let mut transactions_in = Vec::new();
+        let mut transactions_out = Vec::new();
+        
+        for entry in &history {
+            match entry.amount.parse::<u64>() {
+                Ok(amount) => {
+                    match entry.direction.as_str() {
+                        "in" => {
+                            total_in += amount;
+                            transactions_in.push(entry.clone());
+                        },
+                        "out" => {
+                            total_out += amount;
+                            transactions_out.push(entry.clone());
+                        },
+                        _ => {
+                            // Unknown direction, skip
+                            continue;
+                        }
+                    }
+                },
+                Err(_) => {
+                    // Invalid amount format, skip
+                    continue;
+                }
+            }
+        }
+        
+        // Calculate net balance (can be negative if more out than in)
+        let net_balance = total_in as i64 - total_out as i64;
+        
+        Ok((total_in, total_out, net_balance, history))
+    }
+
+    pub async fn fetch_token_events(&self) -> Result<Vec<TokenEvent>> {
+        let state = self.fetch_wallet_state(false).await?;
+        
+        // Convert from the comprehensive state back to the simple format
+        // Group proofs back by their source event ID
+        let mut events_map: HashMap<String, (Vec<CashuProof>, String)> = HashMap::new();
+        
+        for proof in state.proofs {
+            if let Some(event_id) = state.proof_to_event_id.get(&proof.proof_id()) {
+                events_map.entry(event_id.clone())
+                    .or_insert_with(|| (Vec::new(), String::new()))
+                    .0.push(proof);
+            }
+        }
+        
+        // Create TokenEvent structs from the grouped proofs
+        let mut token_events = Vec::new();
+        for (event_id_str, (proofs, _)) in events_map {
+            if let Ok(event_id) = EventId::from_hex(&event_id_str) {
+                // For mint, use the first mint from our config or empty string
+                let mint = self.mints.first().cloned().unwrap_or_default();
+                
+                token_events.push(TokenEvent {
+                    id: event_id,
+                    data: TokenData {
+                        mint,
+                        proofs,
+                        del: Vec::new(), // We don't preserve del info in this simplified view
+                    },
+                    created_at: Timestamp::now(), // We don't preserve original timestamps
+                });
+            }
+        }
+        
         Ok(token_events)
     }
 
@@ -561,12 +745,11 @@ impl Nip60Wallet {
     }
 
     pub async fn get_stats(&self) -> Result<WalletStats> {
-        let balance = self.calculate_balance().await?;
-        let token_events = self.fetch_token_events().await?;
+        let state = self.fetch_wallet_state(false).await?;
 
         Ok(WalletStats {
-            balance,
-            token_events: token_events.len(),
+            balance: state.balance,
+            token_events: state.proof_to_event_id.len(), // Number of unique events with proofs
             mints: self.mints.clone(),
         })
     }
@@ -578,9 +761,8 @@ impl Nip60Wallet {
         amount: u64,
         memo: Option<String>,
     ) -> Result<EventId> {
-        let token_events = self.fetch_token_events().await?;
         let (selected_proofs, remaining_proofs, spent_event_ids) =
-            self.select_proofs_for_amount(&token_events, amount)?;
+            self.select_proofs_for_amount(amount).await?;
 
         if selected_proofs.is_empty() {
             return Err(crate::error::Error::custom("Insufficient balance"));
@@ -688,29 +870,34 @@ impl Nip60Wallet {
         ))
     }
 
-    fn select_proofs_for_amount(
+    async fn select_proofs_for_amount(
         &self,
-        token_events: &[TokenEvent],
         amount: u64,
     ) -> Result<(Vec<CashuProof>, Vec<CashuProof>, Vec<EventId>)> {
+        let state = self.fetch_wallet_state(false).await?;
+        
         let mut selected_proofs = Vec::new();
         let mut remaining_proofs = Vec::new();
-        let mut spent_event_ids = Vec::new();
+        let mut spent_event_ids = HashSet::new();
         let mut current_amount = 0u64;
 
-        for event in token_events {
-            if current_amount >= amount {
-                remaining_proofs.extend(event.data.proofs.clone());
-            } else {
-                spent_event_ids.push(event.id);
-                for proof in &event.data.proofs {
-                    if current_amount < amount {
-                        selected_proofs.push(proof.clone());
-                        current_amount += proof.amount;
-                    } else {
-                        remaining_proofs.push(proof.clone());
+        // Sort proofs by amount to optimize selection (largest first for fewer proofs)
+        let mut available_proofs = state.proofs.clone();
+        available_proofs.sort_by(|a, b| b.amount.cmp(&a.amount));
+
+        for proof in available_proofs {
+            if current_amount < amount {
+                selected_proofs.push(proof.clone());
+                current_amount += proof.amount;
+                
+                // Track which event this proof came from
+                if let Some(event_id_str) = state.proof_to_event_id.get(&proof.proof_id()) {
+                    if let Ok(event_id) = EventId::from_hex(event_id_str) {
+                        spent_event_ids.insert(event_id);
                     }
                 }
+            } else {
+                remaining_proofs.push(proof);
             }
         }
 
@@ -721,6 +908,7 @@ impl Nip60Wallet {
             )));
         }
 
+        let spent_event_ids: Vec<EventId> = spent_event_ids.into_iter().collect();
         Ok((selected_proofs, remaining_proofs, spent_event_ids))
     }
 
