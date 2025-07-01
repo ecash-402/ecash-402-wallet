@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::Duration;
 
-// Import CDK token types for proper cashu token parsing only
 use cdk::nuts::nut00::{Proof, Token};
 
 pub mod kinds {
@@ -18,8 +17,14 @@ pub mod kinds {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletStats {
+    pub balance: u64,
+    pub token_events: usize,
+    pub mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletConfig {
-    pub privkey: String,
     pub mints: Vec<String>,
 }
 
@@ -53,20 +58,15 @@ pub struct TokenEvent {
     pub data: TokenData,
 }
 
-/// NIP-60 Cashu Wallet State Manager
-/// This manages cashu wallet state in Nostr events only - no actual cashu operations
 pub struct Nip60Wallet {
     client: Client,
-    wallet_privkey: String,
     mints: Vec<String>,
 }
 
 impl Nip60Wallet {
-    /// Create a new NIP-60 wallet state manager from existing config
     pub async fn from_config(
         nostr_keys: Keys,
         relays: Vec<&str>,
-        wallet_privkey: &str,
         mints: Vec<String>,
     ) -> Result<Self> {
         let client = Client::new(nostr_keys);
@@ -80,20 +80,10 @@ impl Nip60Wallet {
 
         client.connect().await;
 
-        Ok(Self {
-            client,
-            wallet_privkey: wallet_privkey.to_string(),
-            mints,
-        })
+        Ok(Self { client, mints })
     }
 
-    /// Create a new NIP-60 wallet and publish the configuration
-    pub async fn new(
-        nostr_keys: Keys,
-        relays: Vec<&str>,
-        wallet_privkey: String,
-        mints: Vec<String>,
-    ) -> Result<Self> {
+    pub async fn new(nostr_keys: Keys, relays: Vec<&str>, mints: Vec<String>) -> Result<Self> {
         let client = Client::new(nostr_keys);
 
         for relay in relays {
@@ -105,18 +95,13 @@ impl Nip60Wallet {
 
         client.connect().await;
 
-        let wallet = Self {
-            client,
-            wallet_privkey,
-            mints,
-        };
+        let wallet = Self { client, mints };
 
         wallet.publish_wallet_config().await?;
 
         Ok(wallet)
     }
 
-    /// Load existing NIP-60 wallet configuration from Nostr
     pub async fn load_from_nostr(nostr_keys: Keys, relays: Vec<&str>) -> Result<Option<Self>> {
         let client = Client::new(nostr_keys.clone());
 
@@ -154,7 +139,6 @@ impl Nip60Wallet {
 
             return Ok(Some(Self {
                 client,
-                wallet_privkey: config.privkey,
                 mints: config.mints,
             }));
         }
@@ -165,7 +149,6 @@ impl Nip60Wallet {
     /// Publish wallet configuration to Nostr (kind 17375)
     async fn publish_wallet_config(&self) -> Result<()> {
         let config = WalletConfig {
-            privkey: self.wallet_privkey.clone(),
             mints: self.mints.clone(),
         };
 
@@ -205,14 +188,12 @@ impl Nip60Wallet {
         Ok(())
     }
 
-    /// Record a spending operation in NIP-60 events (state transition only)
     pub async fn record_spend(
         &self,
         amount: u64,
         spent_token_ids: Vec<EventId>,
         unspent_proofs: Vec<CashuProof>,
     ) -> Result<()> {
-        // Create new token event with unspent proofs if any
         let mut new_token_event_id = None;
         if !unspent_proofs.is_empty() {
             new_token_event_id = Some(
@@ -221,12 +202,10 @@ impl Nip60Wallet {
             );
         }
 
-        // Delete spent token events using NIP-09
         for token_id in &spent_token_ids {
             self.delete_token_event(token_id).await?;
         }
 
-        // Create spending history
         let mut event_refs = Vec::new();
         for token_id in &spent_token_ids {
             event_refs.push((
@@ -251,18 +230,10 @@ impl Nip60Wallet {
         Ok(())
     }
 
-    /// Record received cashu tokens as NIP-60 token events
     pub async fn record_receive(&self, token_string: &str) -> Result<u64> {
-        // Parse the cashu token using CDK for validation
         let parsed_token = self.parse_cashu_token(token_string)?;
-
-        // Calculate total amount received from parsed token
         let total_amount = self.calculate_token_amount(&parsed_token)?;
-
-        // Create token events for the received token
         let mut created_event_ids = Vec::new();
-
-        // Extract mint URL and proofs from the parsed token
         let mint_url = parsed_token
             .mint_url()
             .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
@@ -271,7 +242,6 @@ impl Nip60Wallet {
         let token_event_id = self.create_token_event(&mint_url, &proofs, vec![]).await?;
         created_event_ids.push(token_event_id);
 
-        // Create spending history for received tokens
         let event_refs: Vec<_> = created_event_ids
             .iter()
             .map(|id| {
@@ -290,15 +260,12 @@ impl Nip60Wallet {
         Ok(total_amount)
     }
 
-    /// Parse cashu token string using official CDK nut00 implementation (for validation only)
     pub fn parse_cashu_token(&self, token_string: &str) -> Result<Token> {
-        // Use CDK's official token parsing with FromStr trait
         Token::from_str(token_string).map_err(|e| {
             crate::error::Error::custom(&format!("Failed to parse cashu token: {}", e))
         })
     }
 
-    /// Calculate total amount from CDK token
     fn calculate_token_amount(&self, token: &Token) -> Result<u64> {
         let amount: u64 = token
             .proofs()
@@ -308,7 +275,6 @@ impl Nip60Wallet {
         Ok(amount)
     }
 
-    /// Convert CDK proofs to our internal CashuProof format for storage
     fn convert_proofs_to_cashu(&self, proofs: &[Proof]) -> Result<Vec<CashuProof>> {
         let mut cashu_proofs = Vec::new();
 
@@ -324,7 +290,6 @@ impl Nip60Wallet {
         Ok(cashu_proofs)
     }
 
-    /// Calculate balance from Nostr token events
     pub async fn calculate_balance(&self) -> Result<u64> {
         let token_events = self.fetch_token_events().await?;
         let balance = token_events
@@ -335,7 +300,6 @@ impl Nip60Wallet {
         Ok(balance)
     }
 
-    /// Fetch all token events from nostr
     pub async fn fetch_token_events(&self) -> Result<Vec<TokenEvent>> {
         let signer = self
             .client
@@ -423,7 +387,6 @@ impl Nip60Wallet {
         Ok(output.val)
     }
 
-    /// Create a rollover token event with unspent proofs
     async fn create_rollover_token_event(
         &self,
         unspent_proofs: &[CashuProof],
@@ -438,7 +401,6 @@ impl Nip60Wallet {
         }
     }
 
-    /// Delete a token event using NIP-09
     async fn delete_token_event(&self, token_id: &EventId) -> Result<()> {
         // Create a NIP-09 delete event (kind 5)
         let delete_builder = EventBuilder::new(Kind::EventDeletion, "").tags([
@@ -512,7 +474,6 @@ impl Nip60Wallet {
         Ok(())
     }
 
-    /// Get spending history from Nostr
     pub async fn get_spending_history(&self) -> Result<Vec<SpendingHistory>> {
         let signer = self
             .client
@@ -545,24 +506,17 @@ impl Nip60Wallet {
                 .await
                 .map_err(|e| crate::error::Error::custom(&format!("Decryption failed: {}", e)))?;
 
-            // Try to parse as proper SpendingHistory first
             let spending_history = match serde_json::from_str::<SpendingHistory>(&decrypted) {
                 Ok(history) => history,
-                Err(_) => {
-                    // If that fails, try to parse as legacy array format
-                    match serde_json::from_str::<Vec<Vec<String>>>(&decrypted) {
-                        Ok(legacy_data) => {
-                            // Convert legacy format to SpendingHistory
-                            self.parse_legacy_spending_history(legacy_data)?
-                        }
-                        Err(e) => {
-                            return Err(crate::error::Error::custom(&format!(
-                                "Invalid spending history format: {} - Content: {}",
-                                e, decrypted
-                            )));
-                        }
+                Err(_) => match serde_json::from_str::<Vec<Vec<String>>>(&decrypted) {
+                    Ok(legacy_data) => self.parse_legacy_spending_history(legacy_data)?,
+                    Err(e) => {
+                        return Err(crate::error::Error::custom(&format!(
+                            "Invalid spending history format: {} - Content: {}",
+                            e, decrypted
+                        )));
                     }
-                }
+                },
             };
 
             history.push(spending_history);
@@ -571,7 +525,6 @@ impl Nip60Wallet {
         Ok(history)
     }
 
-    /// Parse legacy spending history format into SpendingHistory struct
     fn parse_legacy_spending_history(
         &self,
         legacy_data: Vec<Vec<String>>,
@@ -586,7 +539,6 @@ impl Nip60Wallet {
                     "direction" => direction = item[1].clone(),
                     "amount" => amount = item[1].clone(),
                     "e" => {
-                        // This is an event reference
                         if item.len() >= 4 {
                             events.push((
                                 item[0].clone(), // "e"
@@ -608,7 +560,6 @@ impl Nip60Wallet {
         })
     }
 
-    /// Get wallet statistics from Nostr events
     pub async fn get_stats(&self) -> Result<WalletStats> {
         let balance = self.calculate_balance().await?;
         let token_events = self.fetch_token_events().await?;
@@ -621,17 +572,13 @@ impl Nip60Wallet {
     }
 
     /// Send cashu tokens to another user via encrypted DM
-    /// This creates a cashu token from available proofs and sends it via Nostr DM
     pub async fn send_to_pubkey(
         &self,
         recipient_pubkey: PublicKey,
         amount: u64,
         memo: Option<String>,
     ) -> Result<EventId> {
-        // Get current token events to find proofs to spend
         let token_events = self.fetch_token_events().await?;
-
-        // Select proofs to spend for the requested amount
         let (selected_proofs, remaining_proofs, spent_event_ids) =
             self.select_proofs_for_amount(&token_events, amount)?;
 
@@ -639,7 +586,6 @@ impl Nip60Wallet {
             return Err(crate::error::Error::custom("Insufficient balance"));
         }
 
-        // Create cashu token string from selected proofs
         let mint_url = selected_proofs
             .first()
             .map(|p| p.id.clone()) // Using id as mint reference for now
@@ -647,7 +593,6 @@ impl Nip60Wallet {
 
         let token_string = self.create_cashu_token_string(&mint_url, &selected_proofs, memo)?;
 
-        // Send the token via encrypted DM
         let signer = self
             .client
             .signer()
@@ -669,14 +614,12 @@ impl Nip60Wallet {
             .await
             .map_err(|e| crate::error::Error::custom(&format!("Failed to send DM: {}", e)))?;
 
-        // Record the spending in our wallet state
         self.record_spend(amount, spent_event_ids, remaining_proofs)
             .await?;
 
         Ok(dm_output.val)
     }
 
-    /// Send cashu tokens to yourself via encrypted DM (useful for testing)
     pub async fn send_to_self(&self, amount: u64, memo: Option<String>) -> Result<EventId> {
         let signer = self
             .client
@@ -692,7 +635,6 @@ impl Nip60Wallet {
         self.send_to_pubkey(public_key, amount, memo).await
     }
 
-    /// Send a raw cashu token string to yourself via DM (for topup/testing)
     pub async fn send_token_string_to_self(&self, token_string: &str) -> Result<EventId> {
         let signer = self
             .client
@@ -705,7 +647,6 @@ impl Nip60Wallet {
             .await
             .map_err(|e| crate::error::Error::custom(&format!("Public key error: {}", e)))?;
 
-        // Send the token string directly via encrypted DM
         let encrypted_content = signer
             .nip44_encrypt(&public_key, token_string)
             .await
@@ -724,14 +665,12 @@ impl Nip60Wallet {
         Ok(dm_output.val)
     }
 
-    /// Create a cashu token string from proofs (simplified version for DM sending)
     fn create_cashu_token_string(
         &self,
         mint_url: &str,
         proofs: &[CashuProof],
         memo: Option<String>,
     ) -> Result<String> {
-        // This is a simplified token creation - in a real implementation you'd use proper cashu token format
         let token_data = serde_json::json!({
             "mint": mint_url,
             "proofs": proofs,
@@ -749,7 +688,6 @@ impl Nip60Wallet {
         ))
     }
 
-    /// Select proofs that sum to at least the requested amount
     fn select_proofs_for_amount(
         &self,
         token_events: &[TokenEvent],
@@ -762,7 +700,6 @@ impl Nip60Wallet {
 
         for event in token_events {
             if current_amount >= amount {
-                // Add all remaining proofs as unspent
                 remaining_proofs.extend(event.data.proofs.clone());
             } else {
                 spent_event_ids.push(event.id);
@@ -787,7 +724,6 @@ impl Nip60Wallet {
         Ok((selected_proofs, remaining_proofs, spent_event_ids))
     }
 
-    /// Receive and decrypt DMs to check for incoming cashu tokens
     pub async fn check_incoming_tokens(&self) -> Result<Vec<(EventId, String, u64)>> {
         let signer = self
             .client
@@ -800,7 +736,6 @@ impl Nip60Wallet {
             .await
             .map_err(|e| crate::error::Error::custom(&format!("Public key error: {}", e)))?;
 
-        // Fetch DMs sent to us
         let filter = Filter::new()
             .kind(Kind::EncryptedDirectMessage)
             .pubkey(public_key)
@@ -815,11 +750,8 @@ impl Nip60Wallet {
         let mut incoming_tokens = Vec::new();
 
         for event in events {
-            // Try to decrypt the DM
             if let Ok(decrypted) = signer.nip44_decrypt(&event.pubkey, &event.content).await {
-                // Check if it looks like a cashu token
                 if decrypted.starts_with("cashu") {
-                    // Try to parse and get amount
                     if let Ok(parsed_token) = self.parse_cashu_token(&decrypted) {
                         let amount = self.calculate_token_amount(&parsed_token)?;
                         incoming_tokens.push((event.id, decrypted, amount));
@@ -831,85 +763,16 @@ impl Nip60Wallet {
         Ok(incoming_tokens)
     }
 
-    /// Get wallet configuration
     pub fn get_config(&self) -> WalletConfig {
         WalletConfig {
-            privkey: self.wallet_privkey.clone(),
             mints: self.mints.clone(),
         }
     }
 
-    /// Update wallet configuration and republish
-    pub async fn update_config(
-        &mut self,
-        privkey: Option<String>,
-        mints: Option<Vec<String>>,
-    ) -> Result<()> {
-        if let Some(new_privkey) = privkey {
-            self.wallet_privkey = new_privkey;
-        }
+    pub async fn update_config(&mut self, mints: Option<Vec<String>>) -> Result<()> {
         if let Some(new_mints) = mints {
             self.mints = new_mints;
         }
         self.publish_wallet_config().await
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletStats {
-    pub balance: u64,
-    pub token_events: usize,
-    pub mints: Vec<String>,
-}
-
-pub mod utils {
-    use super::*;
-
-    /// Generate a wallet private key for P2PK ecash operations
-    pub fn generate_wallet_privkey() -> String {
-        use bip39::Mnemonic;
-        let mnemonic = Mnemonic::generate(12).unwrap();
-        mnemonic.to_string()
-    }
-
-    /// Create a quote event for tracking payment state (kind 7374)
-    pub async fn create_quote_event(
-        client: &Client,
-        quote_id: &str,
-        mint_url: &str,
-        expiry_hours: u64,
-    ) -> Result<()> {
-        let expiration = chrono::Utc::now().timestamp() + (expiry_hours * 3600) as i64;
-
-        let signer = client
-            .signer()
-            .await
-            .map_err(|e| crate::error::Error::custom(&format!("Signer error: {}", e)))?;
-
-        let public_key = signer
-            .get_public_key()
-            .await
-            .map_err(|e| crate::error::Error::custom(&format!("Public key error: {}", e)))?;
-
-        let encrypted_content = signer
-            .nip44_encrypt(&public_key, quote_id)
-            .await
-            .map_err(|e| crate::error::Error::custom(&format!("Encryption failed: {}", e)))?;
-
-        let tags = vec![
-            Tag::expiration(Timestamp::from(expiration as u64)),
-            Tag::custom(TagKind::Custom("mint".into()), [mint_url]),
-        ];
-
-        let event_builder = EventBuilder::new(kinds::QUOTE, encrypted_content).tags(tags);
-
-        client
-            .send_event_builder(event_builder)
-            .await
-            .map_err(|e| {
-                crate::error::Error::custom(&format!("Failed to publish quote event: {}", e))
-            })?;
-
-        Ok(())
     }
 }
