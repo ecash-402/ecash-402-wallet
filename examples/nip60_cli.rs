@@ -294,6 +294,8 @@ enum Commands {
         #[arg(short, long, help = "Specific mint URL to filter by")]
         mint: Option<String>,
     },
+    /// Get proof breakdown by mint
+    GetProofBreakdown,
 }
 
 #[tokio::main]
@@ -934,6 +936,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!();
                     }
                 }
+            } else {
+                println!("No wallet found");
+            }
+        }
+
+        Commands::GetProofBreakdown => {
+            let local_config = LocalConfig::load().unwrap_or_default();
+            let keys = Keys::from_str(&local_config.default_private_key.unwrap())?;
+            let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
+
+            if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
+                let breakdown_str = wallet.get_proof_breakdown_string().await?;
+                println!("{}", breakdown_str);
             } else {
                 println!("No wallet found");
             }

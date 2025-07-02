@@ -80,6 +80,52 @@ pub struct EventDetail {
     pub memo: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProofBreakdown {
+    pub mint_url: String,
+    pub total_balance: u64,
+    pub proof_count: usize,
+    pub denominations: std::collections::HashMap<u64, u32>,
+}
+
+impl ProofBreakdown {
+    pub fn new(mint_url: String) -> Self {
+        Self {
+            mint_url,
+            total_balance: 0,
+            proof_count: 0,
+            denominations: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn add_proof(&mut self, amount: u64) {
+        self.total_balance += amount;
+        self.proof_count += 1;
+        *self.denominations.entry(amount).or_insert(0) += 1;
+    }
+
+    pub fn format_denominations(&self) -> String {
+        let mut denom_pairs: Vec<_> = self.denominations.iter().collect();
+        denom_pairs.sort_by_key(|&(k, _)| k);
+
+        denom_pairs
+            .iter()
+            .map(|(amount, count)| format!("{}×{}", amount, count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "{}: {} sats ({} proofs: {})",
+            self.mint_url,
+            self.total_balance,
+            self.proof_count,
+            self.format_denominations()
+        )
+    }
+}
+
 pub struct Nip60Wallet {
     client: Client,
     mints: Vec<String>,
@@ -1241,5 +1287,40 @@ impl Nip60Wallet {
         }
 
         Ok(history_by_mint.into_values().collect())
+    }
+
+    pub fn get_proof_breakdown(&self, proofs: &Proofs) -> Vec<ProofBreakdown> {
+        let mut breakdowns: std::collections::HashMap<String, ProofBreakdown> =
+            std::collections::HashMap::new();
+
+        for proof in proofs {
+            let mint_url = proof.keyset_id.to_string();
+            let entry = breakdowns
+                .entry(mint_url.clone())
+                .or_insert_with(|| ProofBreakdown::new(mint_url));
+
+            entry.add_proof(proof.amount.into());
+        }
+
+        let mut result: Vec<_> = breakdowns.into_values().collect();
+        result.sort_by(|a, b| b.total_balance.cmp(&a.total_balance));
+        result
+    }
+
+    pub async fn get_proof_breakdown_string(&self) -> Result<String> {
+        let proofs = self.get_unspent_proofs().await?;
+        let breakdowns = self.get_proof_breakdown(&proofs);
+
+        if breakdowns.is_empty() {
+            return Ok("No proofs found".to_string());
+        }
+
+        let mut output = String::from("\nProof Breakdown by Mint:");
+        for breakdown in breakdowns {
+            output.push_str("\n    ");
+            output.push_str(&breakdown.to_string());
+        }
+
+        Ok(output)
     }
 }
