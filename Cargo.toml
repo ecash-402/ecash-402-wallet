@@ -23,3 +23,7 @@ anyhow = "1.0"
 chrono = "0.4"
 nostr-sdk = { version = "0.42", features = ["nip44"] }
 cashu = "0.11"
+clap = { version = "4.0", features = ["derive"] }
+base64 = "0.22"
+serde_yaml = "0.9"
+dirs = "5.0"

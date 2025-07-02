@@ -1,5 +1,4 @@
 use crate::error::Result;
-use base64::Engine;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::Proofs;
@@ -20,6 +19,9 @@ pub mod kinds {
     pub const SPENDING_HISTORY: Kind = Kind::Custom(7376);
     pub const QUOTE: Kind = Kind::Custom(7374);
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigMint {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletStats {
@@ -272,13 +274,12 @@ impl Nip60Wallet {
         })
     }
 
-    fn calculate_token_amount(&self, token: &Token) -> Result<u64> {
-        let amount: u64 = token
+    pub fn calculate_token_amount(&self, token: &Token) -> Result<u64> {
+        Ok(token
             .proofs()
             .iter()
             .map(|proof| proof.amount.to_string().parse::<u64>().unwrap())
-            .sum();
-        Ok(amount)
+            .sum())
     }
 
     pub async fn calculate_balance(&self) -> Result<u64> {
@@ -648,7 +649,6 @@ impl Nip60Wallet {
                 },
             };
 
-            // If the spending history doesn't have a timestamp, use the event's creation time
             if spending_history.created_at.is_none() {
                 spending_history.created_at = Some(event.created_at.as_u64());
             }
@@ -810,27 +810,13 @@ impl Nip60Wallet {
         proofs: Proofs,
         memo: Option<String>,
     ) -> Result<String> {
-        let token_data = serde_json::json!({
-            "mint": mint_url,
-            "proofs": proofs,
-            "memo": memo
-        });
-
-        let token_json = serde_json::to_string(&token_data).map_err(|e| {
-            crate::error::Error::custom(&format!("Token serialization failed: {}", e))
-        })?;
-
         let token = Token::new(
             MintUrl::from_str(mint_url).unwrap(),
             proofs,
             memo,
-            CurrencyUnit::Msat,
+            CurrencyUnit::Sat,
         );
-
-        Ok(format!(
-            "cashuA{}",
-            base64::engine::general_purpose::STANDARD.encode(token_json)
-        ))
+        Ok(format!("{}", token))
     }
 
     async fn select_proofs_for_amount(
@@ -925,5 +911,253 @@ impl Nip60Wallet {
             self.mints = new_mints;
         }
         self.publish_wallet_config().await
+    }
+
+    pub async fn send(&self, amount: u64, memo: Option<String>) -> Result<String> {
+        self.send_with_target_mint(amount, None, memo).await
+    }
+
+    pub async fn send_with_target_mint(
+        &self,
+        amount: u64,
+        target_mint: Option<String>,
+        memo: Option<String>,
+    ) -> Result<String> {
+        let state = self.fetch_wallet_state().await?;
+
+        if state.balance < amount {
+            return Err(crate::error::Error::custom(&format!(
+                "Insufficient balance: need {}, have {}",
+                amount, state.balance
+            )));
+        }
+
+        let mint_url =
+            target_mint.unwrap_or_else(|| self.mints.first().cloned().unwrap_or_default());
+
+        let (selected_proofs, consumed_proofs, spent_event_ids) = self
+            .select_proofs_for_exact_amount(amount, &mint_url)
+            .await?;
+
+        let token_string = self.create_cashu_token_string(&mint_url, selected_proofs, memo)?;
+
+        self.mark_proofs_as_spent(&consumed_proofs, &spent_event_ids)
+            .await?;
+
+        Ok(token_string)
+    }
+
+    pub async fn redeem(&self, token_string: &str) -> Result<u64> {
+        let parsed_token = self.parse_cashu_token(token_string)?;
+        let mint_url = parsed_token
+            .mint_url()
+            .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
+            .to_string();
+        let input_proofs = parsed_token.proofs();
+        let _total_input_amount = self.calculate_token_amount(&parsed_token)?;
+
+        let is_trusted_mint = self.mints.contains(&mint_url);
+
+        let final_proofs = if is_trusted_mint {
+            self.optimize_proof_denominations(input_proofs, &mint_url)
+                .await?
+        } else {
+            input_proofs
+        };
+
+        let final_amount = final_proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
+            .sum::<u64>();
+
+        let token_event_id = self
+            .create_token_event(&mint_url, final_proofs, vec![])
+            .await?;
+
+        let event_refs = vec![(
+            "e".to_string(),
+            token_event_id.to_hex(),
+            "".to_string(),
+            "created".to_string(),
+        )];
+
+        self.create_spending_history("in", final_amount, event_refs)
+            .await?;
+
+        Ok(final_amount)
+    }
+
+    async fn select_proofs_for_exact_amount(
+        &self,
+        amount: u64,
+        target_mint: &str,
+    ) -> Result<(Proofs, Proofs, Vec<EventId>)> {
+        let state = self.fetch_wallet_state().await?;
+        let available_proofs: Vec<_> = state.proofs.iter().filter(|_p| true).cloned().collect();
+
+        let available_amount: u64 = available_proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
+            .sum();
+
+        if available_amount < amount {
+            return Err(crate::error::Error::custom(&format!(
+                "Insufficient balance in target mint {}: need {}, have {}",
+                target_mint, amount, available_amount
+            )));
+        }
+
+        let mut selected_proofs = Vec::new();
+        let mut selected_total = 0u64;
+        let mut spent_event_ids = HashSet::new();
+
+        let mut sorted_proofs = available_proofs.clone();
+        sorted_proofs.sort_by(|a, b| b.amount.cmp(&a.amount));
+
+        for proof in &sorted_proofs {
+            if selected_total >= amount {
+                break;
+            }
+            selected_proofs.push(proof.clone());
+            selected_total += proof.amount.to_string().parse::<u64>().unwrap_or(0);
+
+            if let Some(event_id_str) = state.proof_to_event_id.get(&proof.keyset_id.to_string()) {
+                if let Ok(event_id) = EventId::from_hex(event_id_str) {
+                    spent_event_ids.insert(event_id);
+                }
+            }
+        }
+
+        if selected_total < amount {
+            return Err(crate::error::Error::custom(&format!(
+                "Could not select sufficient proofs: need {}, selected {}",
+                amount, selected_total
+            )));
+        }
+
+        if selected_total == amount {
+            let spent_event_ids: Vec<EventId> = spent_event_ids.into_iter().collect();
+            return Ok((selected_proofs.clone(), selected_proofs, spent_event_ids));
+        }
+
+        let change_amount = selected_total - amount;
+        let (send_proofs, change_proofs) = self
+            .split_proofs_for_amounts(selected_proofs, amount, change_amount, target_mint)
+            .await?;
+
+        if !change_proofs.is_empty() {
+            self.create_token_event(target_mint, change_proofs, vec![])
+                .await?;
+        }
+
+        let spent_event_ids: Vec<EventId> = spent_event_ids.into_iter().collect();
+        Ok((send_proofs, sorted_proofs, spent_event_ids))
+    }
+
+    async fn split_proofs_for_amounts(
+        &self,
+        input_proofs: Proofs,
+        send_amount: u64,
+        change_amount: u64,
+        _mint_url: &str,
+    ) -> Result<(Proofs, Proofs)> {
+        let total_input: u64 = input_proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
+            .sum();
+
+        if total_input != send_amount + change_amount {
+            return Err(crate::error::Error::custom(&format!(
+                "Amount mismatch: input={}, send={}, change={}",
+                total_input, send_amount, change_amount
+            )));
+        }
+
+        let _send_denoms = self.calculate_optimal_denominations(send_amount);
+        let _change_denoms = self.calculate_optimal_denominations(change_amount);
+
+        Ok((input_proofs, Vec::new()))
+    }
+
+    fn calculate_optimal_denominations(&self, amount: u64) -> std::collections::HashMap<u64, u32> {
+        let mut denominations = std::collections::HashMap::new();
+        let mut remaining = amount;
+
+        let denoms = [
+            16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1,
+        ];
+
+        for &denom in &denoms {
+            if remaining >= denom {
+                let count = remaining / denom;
+                denominations.insert(denom, count as u32);
+                remaining -= denom * count;
+            }
+        }
+
+        denominations
+    }
+
+    async fn optimize_proof_denominations(
+        &self,
+        proofs: Proofs,
+        _mint_url: &str,
+    ) -> Result<Proofs> {
+        let total_amount: u64 = proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
+            .sum();
+
+        let optimal_denoms = self.calculate_optimal_denominations(total_amount);
+
+        let mut current_denoms = std::collections::HashMap::new();
+        for proof in &proofs {
+            let amount = proof.amount.to_string().parse::<u64>().unwrap_or(0);
+            *current_denoms.entry(amount).or_insert(0) += 1;
+        }
+
+        let mut needs_optimization = false;
+        for (&denom, &optimal_count) in &optimal_denoms {
+            if current_denoms.get(&denom).unwrap_or(&0) != &optimal_count {
+                needs_optimization = true;
+                break;
+            }
+        }
+
+        if !needs_optimization {
+            return Ok(proofs);
+        }
+
+        Ok(proofs)
+    }
+
+    async fn mark_proofs_as_spent(
+        &self,
+        spent_proofs: &Proofs,
+        spent_event_ids: &[EventId],
+    ) -> Result<()> {
+        let mut event_refs = Vec::new();
+        for event_id in spent_event_ids {
+            event_refs.push((
+                "e".to_string(),
+                event_id.to_hex(),
+                "".to_string(),
+                "destroyed".to_string(),
+            ));
+        }
+
+        let total_amount: u64 = spent_proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
+            .sum();
+
+        self.create_spending_history("out", total_amount, event_refs)
+            .await?;
+
+        for event_id in spent_event_ids {
+            self.delete_token_event(event_id).await?;
+        }
+
+        Ok(())
     }
 }
