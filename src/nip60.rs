@@ -21,9 +21,6 @@ pub mod kinds {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigMint {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletStats {
     pub balance: u64,
     pub token_events: usize,
@@ -66,6 +63,23 @@ pub struct WalletState {
     pub proof_to_event_id: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventHistoryByMint {
+    pub mint: String,
+    pub total_received: u64,
+    pub total_spent: u64,
+    pub events: Vec<EventDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventDetail {
+    pub event_id: String,
+    pub direction: String,
+    pub amount: u64,
+    pub timestamp: u64,
+    pub memo: Option<String>,
+}
+
 pub struct Nip60Wallet {
     client: Client,
     mints: Vec<String>,
@@ -88,6 +102,8 @@ impl Nip60Wallet {
 
         client.connect().await;
 
+        let mints = mints.into_iter().map(|url| url).collect();
+
         Ok(Self { client, mints })
     }
 
@@ -102,6 +118,8 @@ impl Nip60Wallet {
         }
 
         client.connect().await;
+
+        let mints = mints.into_iter().map(|url| url).collect();
 
         let wallet = Self { client, mints };
 
@@ -525,7 +543,7 @@ impl Nip60Wallet {
         let del: Vec<String> = deleted_token_ids.iter().map(|id| id.to_hex()).collect();
 
         if let Some(mint) = &self.mints.first() {
-            self.create_token_event(mint, unspent_proofs, del).await
+            self.create_token_event(&mint, unspent_proofs, del).await
         } else {
             Err(crate::error::Error::custom("No mint configured"))
         }
@@ -816,7 +834,8 @@ impl Nip60Wallet {
             memo,
             CurrencyUnit::Sat,
         );
-        Ok(format!("{}", token))
+
+        Ok(token.to_string())
     }
 
     async fn select_proofs_for_amount(
@@ -907,10 +926,11 @@ impl Nip60Wallet {
     }
 
     pub async fn update_config(&mut self, mints: Option<Vec<String>>) -> Result<()> {
-        if let Some(new_mints) = mints {
-            self.mints = new_mints;
+        if let Some(mints) = mints {
+            self.mints = mints.into_iter().map(|url| url).collect();
+            self.publish_wallet_config().await?;
         }
-        self.publish_wallet_config().await
+        Ok(())
     }
 
     pub async fn send(&self, amount: u64, memo: Option<String>) -> Result<String> {
@@ -956,7 +976,7 @@ impl Nip60Wallet {
         let input_proofs = parsed_token.proofs();
         let _total_input_amount = self.calculate_token_amount(&parsed_token)?;
 
-        let is_trusted_mint = self.mints.contains(&mint_url);
+        let is_trusted_mint = self.mints.iter().any(|m| m.clone() == mint_url);
 
         let final_proofs = if is_trusted_mint {
             self.optimize_proof_denominations(input_proofs, &mint_url)
@@ -1159,5 +1179,67 @@ impl Nip60Wallet {
         }
 
         Ok(())
+    }
+
+    pub async fn get_event_history_by_mint(
+        &self,
+        mint_url: Option<String>,
+    ) -> Result<Vec<EventHistoryByMint>> {
+        let mut history_by_mint: HashMap<String, EventHistoryByMint> = HashMap::new();
+
+        // Initialize history for all mints or specific mint
+        let target_mints = if let Some(url) = mint_url {
+            vec![url]
+        } else {
+            self.mints.iter().map(|m| m.clone()).collect()
+        };
+
+        println!("{:?}", target_mints);
+        for mint in &target_mints {
+            history_by_mint.insert(
+                mint.clone(),
+                EventHistoryByMint {
+                    mint: mint.clone(),
+                    total_received: 0,
+                    total_spent: 0,
+                    events: Vec::new(),
+                },
+            );
+        }
+
+        // Get all spending history events
+        let spending_history = self.get_spending_history().await?;
+
+        // Process each spending history event
+        for history in spending_history {
+            for (mint, _, amount, event_id) in history.events {
+                if let Some(entry) = history_by_mint.get_mut(&mint) {
+                    let amount_value = amount.parse::<u64>().unwrap_or(0);
+
+                    let detail = EventDetail {
+                        event_id: event_id.clone(),
+                        direction: history.direction.clone(),
+                        amount: amount_value,
+                        timestamp: history.created_at.unwrap_or(0),
+                        memo: None, // Could be extended to include memo if available
+                    };
+
+                    if history.direction == "in" {
+                        entry.total_received += amount_value;
+                    } else if history.direction == "out" {
+                        entry.total_spent += amount_value;
+                    }
+
+                    entry.events.push(detail);
+                }
+            }
+        }
+
+        // Sort events by timestamp (newest first)
+        for history in history_by_mint.values_mut() {
+            history.events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        }
+
+        Ok(history_by_mint.into_values().collect())
     }
 }

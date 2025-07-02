@@ -1,3 +1,4 @@
+use cashu::CurrencyUnit;
 use clap::{Parser, Subcommand};
 use ecash_402_wallet::nip60::Nip60Wallet;
 use nostr_sdk::prelude::*;
@@ -9,7 +10,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalConfig {
     pub relays: Vec<String>,
-    pub mints: Vec<String>,
+    pub mints: Vec<MintInfo>,
     pub default_private_key: Option<String>,
 }
 
@@ -22,6 +23,48 @@ impl Default for LocalConfig {
             ],
             mints: vec![],
             default_private_key: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigMint {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MintInfo {
+    pub url: String,
+    pub unit: String,
+}
+
+fn default_unit() -> String {
+    "sat".to_string()
+}
+
+impl Default for MintInfo {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            unit: default_unit(),
+        }
+    }
+}
+
+impl MintInfo {
+    pub fn new(url: String, unit: String) -> Self {
+        // Validate and normalize the unit
+        let unit = match unit.to_lowercase().as_str() {
+            "sat" | "sats" => "sat".to_string(),
+            "msat" | "msats" => "msat".to_string(),
+            _ => default_unit(), // fallback to sat for unknown units
+        };
+
+        Self { url, unit }
+    }
+
+    pub fn currency_unit(&self) -> CurrencyUnit {
+        match self.unit.as_str() {
+            "msat" => CurrencyUnit::Msat,
+            _ => CurrencyUnit::Sat,
         }
     }
 }
@@ -40,6 +83,7 @@ impl LocalConfig {
         let config_file = Self::config_file()?;
         if config_file.exists() {
             let content = fs::read_to_string(&config_file)?;
+            println!("{:?}", content);
             let config: LocalConfig = serde_yaml::from_str(&content)?;
             Ok(config)
         } else {
@@ -72,7 +116,7 @@ impl LocalConfig {
         };
 
         let final_mints = if mints.is_empty() {
-            self.mints.clone()
+            self.mints.iter().map(|m| m.url.clone()).collect()
         } else {
             mints
         };
@@ -244,6 +288,11 @@ enum Commands {
         mint: Option<String>,
         #[arg(long, help = "Clear default private key", action)]
         clear_key: bool,
+    },
+    /// Get event history by mint
+    GetEventHistoryByMint {
+        #[arg(short, long, help = "Specific mint URL to filter by")]
+        mint: Option<String>,
     },
 }
 
@@ -487,8 +536,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
                 let history = wallet.get_spending_history().await?;
+                println!("{:?}", history);
                 println!("Spending history: {} entries", history.len());
                 for (i, entry) in history.iter().enumerate() {
+                    println!("{:?}", entry);
                     println!("  Entry {}: {} sats", i + 1, entry.amount);
                 }
             } else {
@@ -503,10 +554,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
                 let stats = wallet.get_stats().await?;
-                println!("Wallet stats:");
-                println!("  Balance: {} sats", stats.balance);
-                println!("  Token events: {}", stats.token_events);
-                println!("  Mints: {:?}", stats.mints);
+                println!("Balance: {} sats", stats.balance);
+                println!("Token Events: {}", stats.token_events);
+                println!("\nMints:");
+                for mint in stats.mints {
+                    println!("  - URL: {}", mint);
+                    // println!("    Unit: {}", mint.unit);
+                }
             } else {
                 println!("No wallet found");
             }
@@ -732,15 +786,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::ShowLocalConfig => match LocalConfig::load() {
             Ok(config) => {
-                if let Ok(config_file) = LocalConfig::config_file() {
-                    println!("Local configuration ({})", config_file.display());
+                println!("Current local configuration:");
+                println!("\nRelays:");
+                for relay in &config.relays {
+                    println!("  - {}", relay);
                 }
-                println!("  Relays: {:?}", config.relays);
-                println!("  Mints: {:?}", config.mints);
-                if config.default_private_key.is_some() {
-                    println!("  Default private key: [CONFIGURED]");
+                println!("\nMints:");
+                for mint in &config.mints {
+                    println!("  - URL: {}", mint.url);
+                    println!("    Unit: {}", mint.unit);
+                }
+                if let Some(_) = config.default_private_key {
+                    println!("\nDefault private key: [SET]");
                 } else {
-                    println!("  Default private key: [NOT SET]");
+                    println!("\nDefault private key: [NOT SET]");
                 }
             }
             Err(e) => {
@@ -753,65 +812,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mints,
             default_private_key,
         } => {
-            let config = LocalConfig {
-                relays,
-                mints,
-                default_private_key,
-            };
-
-            match config.save() {
-                Ok(_) => {
-                    println!("Local configuration updated:");
-                    println!("  Relays: {:?}", config.relays);
-                    println!("  Mints: {:?}", config.mints);
-                    if config.default_private_key.is_some() {
-                        println!("  Default private key: [SET]");
-                    } else {
-                        println!("  Default private key: [NOT SET]");
-                    }
-                }
-                Err(e) => {
-                    println!("Failed to save local config: {}", e);
-                }
-            }
+            let mut config = LocalConfig::default();
+            config.relays = relays;
+            config.mints = mints
+                .into_iter()
+                .map(|url| MintInfo {
+                    url,
+                    unit: "sat".to_string(),
+                })
+                .collect();
+            config.default_private_key = default_private_key;
+            config.save()?;
         }
 
-        Commands::AddToLocalConfig { relay, mint } => match LocalConfig::load() {
-            Ok(mut config) => {
-                let mut updated = false;
+        Commands::AddToLocalConfig { relay, mint } => {
+            let mut config = LocalConfig::load().unwrap_or_default();
+            let mut updated = false;
 
-                if let Some(relay_url) = relay {
-                    if !config.relays.contains(&relay_url) {
-                        config.relays.push(relay_url.clone());
-                        println!("Added relay: {}", relay_url);
-                        updated = true;
-                    } else {
-                        println!("Relay already exists: {}", relay_url);
-                    }
-                }
-
-                if let Some(mint_url) = mint {
-                    if !config.mints.contains(&mint_url) {
-                        config.mints.push(mint_url.clone());
-                        println!("Added mint: {}", mint_url);
-                        updated = true;
-                    } else {
-                        println!("Mint already exists: {}", mint_url);
-                    }
-                }
-
-                if updated {
-                    if let Err(e) = config.save() {
-                        println!("Failed to save config: {}", e);
-                    }
-                } else {
-                    println!("No changes made");
+            if let Some(relay_url) = relay {
+                if !config.relays.contains(&relay_url) {
+                    config.relays.push(relay_url.clone());
+                    println!("Added relay: {}", relay_url);
+                    updated = true;
                 }
             }
-            Err(e) => {
-                println!("Failed to load local config: {}", e);
+
+            if let Some(mint_url) = mint {
+                if !config.mints.iter().any(|m| m.url == mint_url) {
+                    config.mints.push(MintInfo {
+                        url: mint_url.clone(),
+                        unit: "sat".to_string(),
+                    });
+                    println!("Added mint: {}", mint_url);
+                    updated = true;
+                }
             }
-        },
+
+            if updated {
+                config.save()?;
+            } else {
+                println!("No changes needed");
+            }
+        }
 
         Commands::RemoveFromLocalConfig {
             relay,
@@ -832,7 +874,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if let Some(mint_url) = mint {
-                    if let Some(pos) = config.mints.iter().position(|m| m == &mint_url) {
+                    if let Some(pos) = config.mints.iter().position(|m| m.url == mint_url) {
                         config.mints.remove(pos);
                         println!("Removed mint: {}", mint_url);
                         updated = true;
@@ -863,6 +905,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Failed to load local config: {}", e);
             }
         },
+
+        Commands::GetEventHistoryByMint { mint } => {
+            let local_config = LocalConfig::load().unwrap_or_default();
+            let keys = Keys::from_str(&local_config.default_private_key.unwrap())?;
+            let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
+
+            if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
+                let history = wallet.get_event_history_by_mint(mint).await?;
+                for mint_history in history {
+                    println!("\nMint: {}", mint_history.mint);
+                    // println!("Unit: {}", mint_history.mint.unit);
+                    println!("Total Received: {} sats", mint_history.total_received);
+                    println!("Total Spent: {} sats", mint_history.total_spent);
+                    println!(
+                        "Net Balance: {} sats",
+                        mint_history.total_received - mint_history.total_spent
+                    );
+                    println!("\nEvents:");
+                    for event in mint_history.events {
+                        println!("  - Direction: {}", event.direction);
+                        println!("    Amount: {} sats", event.amount);
+                        println!("    Timestamp: {}", event.timestamp);
+                        println!("    Event ID: {}", event.event_id);
+                        if let Some(memo) = event.memo {
+                            println!("    Memo: {}", memo);
+                        }
+                        println!();
+                    }
+                }
+            } else {
+                println!("No wallet found");
+            }
+        }
     }
 
     Ok(())
