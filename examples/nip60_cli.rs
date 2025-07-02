@@ -377,7 +377,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Config published to relays: {:?}", wallet.get_config());
                 }
                 Err(e) => {
-                    println!("❌ Failed to create wallet: {}", e);
+                    println!("❌ Failed to create wallet: {:?}", e);
                     if let Some(backup_keys) = keys_backup {
                         println!(
                             "Your generated private key (save this!): {}",

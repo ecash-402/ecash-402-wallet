@@ -383,15 +383,12 @@ impl Nip60Wallet {
         let mut wallet_events: Vec<_> = events.iter().filter(|e| e.kind == kinds::WALLET).collect();
         wallet_events.sort_by_key(|e| e.created_at);
 
-        // Update mint URLs from wallet event if present
         if let Some(wallet_event) = wallet_events.last() {
             if let Ok(decrypted) = signer
                 .nip44_decrypt(&public_key, &wallet_event.content)
                 .await
             {
-                if let Ok(wallet_data) = serde_json::from_str::<serde_json::Value>(&decrypted) {
-                    println!("wallet_data: {:?}", wallet_data);
-                }
+                if let Ok(wallet_data) = serde_json::from_str::<serde_json::Value>(&decrypted) {}
             }
         }
 
@@ -829,7 +826,8 @@ impl Nip60Wallet {
             .map(|p| p.keyset_id.to_string().clone())
             .unwrap_or_else(|| self.mints.first().cloned().unwrap_or_default());
 
-        let token_string = self.create_cashu_token_string(&mint_url, selected_proofs, memo)?;
+        let token_string =
+            self.create_cashu_token_string(&mint_url, selected_proofs, memo, None)?;
 
         let signer = self
             .client
@@ -906,12 +904,13 @@ impl Nip60Wallet {
         mint_url: &str,
         proofs: Proofs,
         memo: Option<String>,
+        unit: Option<CurrencyUnit>,
     ) -> Result<String> {
         let token = Token::new(
             MintUrl::from_str(mint_url).unwrap(),
             proofs,
             memo,
-            CurrencyUnit::Sat,
+            unit.unwrap_or(CurrencyUnit::Sat),
         );
 
         Ok(token.to_string())
@@ -1038,7 +1037,8 @@ impl Nip60Wallet {
             .select_proofs_for_exact_amount(amount, &mint_url)
             .await?;
 
-        let token_string = self.create_cashu_token_string(&mint_url, selected_proofs, memo)?;
+        let token_string =
+            self.create_cashu_token_string(&mint_url, selected_proofs, memo, None)?;
 
         self.mark_proofs_as_spent(&consumed_proofs, &spent_event_ids)
             .await?;
@@ -1111,20 +1111,37 @@ impl Nip60Wallet {
         let mut spent_event_ids = HashSet::new();
 
         let mut sorted_proofs = available_proofs.clone();
-        sorted_proofs.sort_by(|a, b| b.amount.cmp(&a.amount));
+        sorted_proofs.sort_by(|a, b| b.amount.cmp(&a.amount)); // largest → smallest
 
+        println!("{:?}", state.proof_to_event_id);
+        let mut remaining = amount;
         for proof in &sorted_proofs {
-            if selected_total >= amount {
+            println!("{:?}", proof);
+            if remaining == 0 {
                 break;
             }
+
+            let value = proof.amount.to_string().parse::<u64>().unwrap_or(0);
+            if value == 0 || value > remaining {
+                continue; // skip anything that would overshoot
+            }
+
             selected_proofs.push(proof.clone());
-            selected_total += proof.amount.to_string().parse::<u64>().unwrap_or(0);
+            selected_total += value;
+            remaining -= value;
 
             if let Some(event_id_str) = state.proof_to_event_id.get(&proof.keyset_id.to_string()) {
                 if let Ok(event_id) = EventId::from_hex(event_id_str) {
                     spent_event_ids.insert(event_id);
                 }
             }
+        }
+
+        if remaining != 0 {
+            return Err(crate::error::Error::custom(&format!(
+                "Could not find an exact combination of proofs to cover {} sats ({} sats missing)",
+                amount, remaining
+            )));
         }
 
         if selected_total < amount {
@@ -1136,6 +1153,7 @@ impl Nip60Wallet {
 
         if selected_total == amount {
             let spent_event_ids: Vec<EventId> = spent_event_ids.into_iter().collect();
+            println!("{:?}", spent_event_ids);
             return Ok((selected_proofs.clone(), selected_proofs, spent_event_ids));
         }
 
@@ -1150,7 +1168,7 @@ impl Nip60Wallet {
         }
 
         let spent_event_ids: Vec<EventId> = spent_event_ids.into_iter().collect();
-        Ok((send_proofs, sorted_proofs, spent_event_ids))
+        Ok((send_proofs, available_proofs, spent_event_ids))
     }
 
     async fn split_proofs_for_amounts(
@@ -1266,14 +1284,12 @@ impl Nip60Wallet {
     ) -> Result<Vec<EventHistoryByMint>> {
         let mut history_by_mint: HashMap<String, EventHistoryByMint> = HashMap::new();
 
-        // Initialize history for all mints or specific mint
         let target_mints = if let Some(url) = mint_url {
             vec![url]
         } else {
             self.mints.iter().map(|m| m.clone()).collect()
         };
 
-        println!("{:?}", target_mints);
         for mint in &target_mints {
             history_by_mint.insert(
                 mint.clone(),
