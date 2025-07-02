@@ -9,7 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::error::Error;
+use base64::{Engine as _, engine::general_purpose::STANDARD as base64};
 use cdk::nuts::nut00::Token;
+use hex;
 
 pub mod kinds {
     use nostr_sdk::Kind;
@@ -61,6 +64,7 @@ pub struct WalletState {
     pub balance: u64,
     pub proofs: Proofs,
     pub proof_to_event_id: HashMap<String, String>,
+    pub mint_keysets: HashMap<String, Vec<HashMap<String, String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,83 +360,105 @@ impl Nip60Wallet {
             .client
             .signer()
             .await
-            .map_err(|e| crate::error::Error::custom(&format!("Signer error: {}", e)))?;
+            .map_err(|e| Error::custom(&format!("Failed to get signer: {}", e)))?;
 
         let public_key = signer
             .get_public_key()
             .await
-            .map_err(|e| crate::error::Error::custom(&format!("Public key error: {}", e)))?;
+            .map_err(|e| Error::custom(&format!("Failed to get public key: {}", e)))?;
 
-        let wallet_filter = Filter::new().author(public_key).kind(kinds::WALLET);
-        let token_filter = Filter::new().author(public_key).kind(kinds::TOKEN);
-        let delete_filter = Filter::new().author(public_key).kind(Kind::EventDeletion);
+        let filter = Filter::new().author(public_key).kinds(vec![
+            kinds::WALLET,
+            kinds::TOKEN,
+            Kind::EventDeletion,
+        ]);
 
-        let (_wallet_events, token_events, delete_events) = tokio::try_join!(
-            self.client
-                .fetch_events(wallet_filter, Duration::from_secs(10)),
-            self.client
-                .fetch_events(token_filter, Duration::from_secs(10)),
-            self.client
-                .fetch_events(delete_filter, Duration::from_secs(10))
-        )
-        .map_err(|e| crate::error::Error::custom(&format!("Failed to fetch events: {}", e)))?;
+        let events = self
+            .client
+            .fetch_events(filter, Duration::from_secs(10))
+            .await
+            .map_err(|e| Error::custom(&format!("Failed to fetch events: {}", e)))?;
 
-        let mut deleted_ids = HashSet::new();
-        for event in delete_events {
-            for tag in event.tags.iter() {
-                if let Some(TagStandard::Event { event_id, .. }) = tag.as_standardized() {
-                    deleted_ids.insert(event_id.to_hex());
+        // Find the newest wallet event
+        let mut wallet_events: Vec<_> = events.iter().filter(|e| e.kind == kinds::WALLET).collect();
+        wallet_events.sort_by_key(|e| e.created_at);
+
+        // Update mint URLs from wallet event if present
+        if let Some(wallet_event) = wallet_events.last() {
+            if let Ok(decrypted) = signer
+                .nip44_decrypt(&public_key, &wallet_event.content)
+                .await
+            {
+                if let Ok(wallet_data) = serde_json::from_str::<serde_json::Value>(&decrypted) {
+                    println!("wallet_data: {:?}", wallet_data);
                 }
             }
         }
 
-        let mut token_events_parsed = Vec::new();
-        for event in token_events {
-            if deleted_ids.contains(&event.id.to_hex()) {
-                continue;
+        // Collect token events and track deleted events
+        let mut deleted_ids: HashSet<String> = HashSet::new();
+        for event in events.iter() {
+            if event.kind == Kind::EventDeletion {
+                for tag in event.tags.iter() {
+                    if let Some(TagStandard::Event { event_id, .. }) = tag.as_standardized() {
+                        deleted_ids.insert(event_id.to_hex());
+                    }
+                }
             }
-
-            let decrypted = signer
-                .nip44_decrypt(&public_key, &event.content)
-                .await
-                .map_err(|e| crate::error::Error::custom(&format!("Decryption failed: {}", e)))?;
-
-            let token_data: TokenData = serde_json::from_str(&decrypted)
-                .map_err(|e| crate::error::Error::custom(&format!("Invalid token data: {}", e)))?;
-
-            token_events_parsed.push(TokenEvent {
-                id: event.id,
-                data: token_data,
-                created_at: event.created_at,
-            });
         }
 
-        token_events_parsed.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let mut token_events: Vec<_> = events.iter().filter(|e| e.kind == kinds::TOKEN).collect();
 
-        let mut invalid_token_ids = deleted_ids.clone();
-        let mut proof_seen = HashSet::new();
+        token_events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
+
+        let mut invalid_token_ids = deleted_ids;
+        let mut proof_seen: HashSet<String> = HashSet::new();
         let mut all_proofs = Vec::new();
         let mut proof_to_event_id = HashMap::new();
+        let mut undecryptable_events = Vec::new();
 
-        for event in &token_events_parsed {
+        for event in token_events {
             if invalid_token_ids.contains(&event.id.to_hex()) {
                 continue;
             }
 
-            for old_id in &event.data.del {
-                invalid_token_ids.insert(old_id.clone());
+            // Try to decrypt token data
+            let decrypted = match signer.nip44_decrypt(&public_key, &event.content).await {
+                Ok(d) => d,
+                Err(_) => {
+                    undecryptable_events.push(event.id.to_hex());
+                    continue;
+                }
+            };
+
+            let token_data: TokenData = match serde_json::from_str(&decrypted) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            for del_id in &token_data.del {
+                invalid_token_ids.insert(del_id.clone());
+                undecryptable_events.retain(|id| id != del_id);
             }
 
             if invalid_token_ids.contains(&event.id.to_hex()) {
                 continue;
             }
 
-            for proof in &event.data.proofs {
-                let proof_id = proof.keyset_id.to_string();
+            for proof in &token_data.proofs {
+                let secret_str = proof.secret.to_string();
+                let hex_secret = if let Ok(secret_bytes) = base64.decode(&secret_str) {
+                    hex::encode(secret_bytes)
+                } else {
+                    secret_str
+                };
+
+                let proof_id = format!("{}:{}", hex_secret, proof.c);
                 if proof_seen.contains(&proof_id) {
                     continue;
                 }
                 proof_seen.insert(proof_id.clone());
+
                 all_proofs.push(proof.clone());
                 proof_to_event_id.insert(proof_id, event.id.to_hex());
             }
@@ -440,13 +466,20 @@ impl Nip60Wallet {
 
         let balance = all_proofs
             .iter()
-            .map(|p| p.amount.to_string().parse::<u64>().unwrap())
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
             .sum();
+
+        let mut mint_keysets = HashMap::new();
+        for mint in &self.mints {
+            // TODO: Implement mint keyset fetching
+            mint_keysets.insert(mint.clone(), Vec::new());
+        }
 
         Ok(WalletState {
             balance,
             proofs: all_proofs,
             proof_to_event_id,
+            mint_keysets,
         })
     }
 
