@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::mint::{KeysetInfo, MintClient};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::Proofs;
@@ -33,6 +34,15 @@ pub struct WalletStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletConfig {
     pub mints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MintInfo {
+    pub url: String,
+    pub keysets: Vec<KeysetInfo>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +143,31 @@ impl ProofBreakdown {
 pub struct Nip60Wallet {
     client: Client,
     mints: Vec<String>,
+    mint_infos: HashMap<String, MintInfo>,
+}
+
+impl MintInfo {
+    pub async fn from_url(url: String) -> Result<Self> {
+        let client = MintClient::new(&url)?;
+
+        let keysets = match client.get_keysets().await {
+            Ok(response) => response.keysets,
+            Err(_) => Vec::new(),
+        };
+
+        let (name, description) = match client.get_info().await {
+            Ok(info) => (info.name, info.description),
+            Err(_) => (None, None),
+        };
+
+        Ok(Self {
+            url,
+            keysets,
+            name,
+            description,
+            active: true,
+        })
+    }
 }
 
 impl Nip60Wallet {
@@ -153,8 +188,16 @@ impl Nip60Wallet {
         client.connect().await;
 
         let mints = mints.into_iter().map(|url| url).collect();
+        let mint_infos = HashMap::new();
 
-        Ok(Self { client, mints })
+        let mut wallet = Self {
+            client,
+            mints,
+            mint_infos,
+        };
+        wallet.initialize_mint_infos().await?;
+
+        Ok(wallet)
     }
 
     pub async fn new(nostr_keys: Keys, relays: Vec<&str>, mints: Vec<String>) -> Result<Self> {
@@ -170,12 +213,70 @@ impl Nip60Wallet {
         client.connect().await;
 
         let mints = mints.into_iter().map(|url| url).collect();
+        let mint_infos = HashMap::new();
 
-        let wallet = Self { client, mints };
+        let mut wallet = Self {
+            client,
+            mints,
+            mint_infos,
+        };
 
         wallet.publish_wallet_config().await?;
 
+        wallet.initialize_mint_infos().await?;
+
         Ok(wallet)
+    }
+
+    pub async fn initialize_mint_infos(&mut self) -> Result<()> {
+        for mint_url in &self.mints {
+            if !self.mint_infos.contains_key(mint_url) {
+                match MintInfo::from_url(mint_url.clone()).await {
+                    Ok(mint_info) => {
+                        self.mint_infos.insert(mint_url.clone(), mint_info);
+                    }
+                    Err(_) => {
+                        let basic_info = MintInfo {
+                            url: mint_url.clone(),
+                            keysets: Vec::new(),
+                            name: None,
+                            description: None,
+                            active: false,
+                        };
+                        self.mint_infos.insert(mint_url.clone(), basic_info);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_mint_info(&self, mint_url: &str) -> Option<&MintInfo> {
+        self.mint_infos.get(mint_url)
+    }
+
+    pub fn get_mint_keysets(&self, mint_url: &str) -> Vec<KeysetInfo> {
+        self.mint_infos
+            .get(mint_url)
+            .map(|info| info.keysets.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_active_keysets(&self, mint_url: &str) -> Vec<KeysetInfo> {
+        self.get_mint_keysets(mint_url)
+            .into_iter()
+            .filter(|k| k.active)
+            .collect()
+    }
+
+    pub async fn refresh_mint_info(&mut self, mint_url: &str) -> Result<()> {
+        match MintInfo::from_url(mint_url.to_string()).await {
+            Ok(mint_info) => {
+                self.mint_infos.insert(mint_url.to_string(), mint_info);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn load_from_nostr(nostr_keys: Keys, relays: Vec<&str>) -> Result<Option<Self>> {
@@ -213,10 +314,13 @@ impl Nip60Wallet {
                 crate::error::Error::custom(&format!("Invalid wallet config: {}", e))
             })?;
 
-            return Ok(Some(Self {
+            let mut wallet = Self {
                 client,
                 mints: config.mints,
-            }));
+                mint_infos: HashMap::new(),
+            };
+            wallet.initialize_mint_infos().await?;
+            return Ok(Some(wallet));
         }
 
         Ok(None)
@@ -388,7 +492,7 @@ impl Nip60Wallet {
                 .nip44_decrypt(&public_key, &wallet_event.content)
                 .await
             {
-                if let Ok(wallet_data) = serde_json::from_str::<serde_json::Value>(&decrypted) {}
+                if let Ok(_wallet_data) = serde_json::from_str::<serde_json::Value>(&decrypted) {}
             }
         }
 
@@ -468,8 +572,18 @@ impl Nip60Wallet {
 
         let mut mint_keysets = HashMap::new();
         for mint in &self.mints {
-            // TODO: Implement mint keyset fetching
-            mint_keysets.insert(mint.clone(), Vec::new());
+            let keysets_data: Vec<HashMap<String, String>> = self
+                .get_mint_keysets(mint)
+                .into_iter()
+                .map(|k| {
+                    let mut map = HashMap::new();
+                    map.insert("id".to_string(), k.id);
+                    map.insert("unit".to_string(), k.unit);
+                    map.insert("active".to_string(), k.active.to_string());
+                    map
+                })
+                .collect();
+            mint_keysets.insert(mint.clone(), keysets_data);
         }
 
         Ok(WalletState {
@@ -798,6 +912,10 @@ impl Nip60Wallet {
         })
     }
 
+    pub fn get_all_mint_infos(&self) -> Vec<&MintInfo> {
+        self.mint_infos.values().collect()
+    }
+
     pub async fn get_stats(&self) -> Result<WalletStats> {
         let state = self.fetch_wallet_state().await?;
 
@@ -1006,6 +1124,7 @@ impl Nip60Wallet {
     pub async fn update_config(&mut self, mints: Option<Vec<String>>) -> Result<()> {
         if let Some(mints) = mints {
             self.mints = mints.into_iter().map(|url| url).collect();
+            self.initialize_mint_infos().await?;
             self.publish_wallet_config().await?;
         }
         Ok(())

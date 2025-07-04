@@ -296,6 +296,11 @@ enum Commands {
     },
     /// Get proof breakdown by mint
     GetProofBreakdown,
+    /// Show mint information
+    ShowMintInfo {
+        #[arg(short, long, help = "Specific mint URL to show info for")]
+        mint: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -949,6 +954,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
                 let breakdown_str = wallet.get_proof_breakdown_string().await?;
                 println!("{}", breakdown_str);
+            } else {
+                println!("No wallet found");
+            }
+        }
+
+        Commands::ShowMintInfo { mint } => {
+            let local_config = LocalConfig::load().unwrap_or_default();
+            let keys = Keys::from_str(&local_config.default_private_key.unwrap())?;
+            let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
+
+            if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
+                if let Some(mint_url) = mint {
+                    if let Some(mint_info) = wallet.get_mint_info(&mint_url) {
+                        println!("\nMint Information for: {}", mint_url);
+                        println!("=================================");
+                        println!("Name: {}", mint_info.name.as_deref().unwrap_or("Unknown"));
+                        println!(
+                            "Description: {}",
+                            mint_info.description.as_deref().unwrap_or("No description")
+                        );
+                        println!("Active: {}", mint_info.active);
+                        println!("\nKeysets:");
+                        for keyset in &mint_info.keysets {
+                            println!("  - ID: {}", keyset.id);
+                            println!("    Unit: {}", keyset.unit);
+                            println!("    Active: {}", keyset.active);
+                            println!();
+                        }
+                    } else {
+                        println!("Mint not found: {}", mint_url);
+                    }
+                } else {
+                    println!("\nAll Mint Information:");
+                    println!("=====================");
+                    for mint_info in wallet.get_all_mint_infos() {
+                        println!("\nMint: {}", mint_info.url);
+                        println!("Name: {}", mint_info.name.as_deref().unwrap_or("Unknown"));
+                        println!(
+                            "Description: {}",
+                            mint_info.description.as_deref().unwrap_or("No description")
+                        );
+                        println!("Active: {}", mint_info.active);
+                        println!("Keysets: {}", mint_info.keysets.len());
+                        for keyset in &mint_info.keysets {
+                            println!(
+                                "  - {} ({}) - Active: {}",
+                                keyset.id, keyset.unit, keyset.active
+                            );
+                        }
+                    }
+                }
             } else {
                 println!("No wallet found");
             }
