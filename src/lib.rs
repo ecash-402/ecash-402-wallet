@@ -3,3 +3,4 @@ pub mod models;
 pub mod wallet;
 
 pub mod nip60;
+pub mod mint;
