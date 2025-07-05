@@ -1026,14 +1026,53 @@ impl Nip60Wallet {
         memo: Option<String>,
         unit: Option<CurrencyUnit>,
     ) -> Result<String> {
+        let currency_unit = if let Some(provided_unit) = unit {
+            provided_unit
+        } else {
+            self.determine_unit_from_proofs(mint_url, &proofs)?
+        };
+        println!("{}", currency_unit);
+
         let token = Token::new(
-            MintUrl::from_str(mint_url).unwrap(),
+            MintUrl::from_str(mint_url)
+                .map_err(|e| crate::error::Error::custom(&format!("Invalid mint URL: {}", e)))?,
             proofs,
             memo,
-            unit.unwrap_or(CurrencyUnit::Sat),
+            currency_unit,
         );
 
         Ok(token.to_string())
+    }
+
+    fn determine_unit_from_proofs(&self, mint_url: &str, proofs: &Proofs) -> Result<CurrencyUnit> {
+        let first_proof = proofs
+            .first()
+            .ok_or_else(|| crate::error::Error::custom("No proofs provided"))?;
+
+        let keyset_id = &first_proof.keyset_id.to_string();
+
+        if let Some(mint_info) = self.get_mint_info(mint_url) {
+            for keyset in &mint_info.keysets {
+                if keyset.id == *keyset_id {
+                    return match keyset.unit.as_str() {
+                        "sat" => Ok(CurrencyUnit::Sat),
+                        "msat" => Ok(CurrencyUnit::Msat),
+                        "usd" => Ok(CurrencyUnit::Usd),
+                        "eur" => Ok(CurrencyUnit::Eur),
+                        _ => CurrencyUnit::from_str(&keyset.unit)
+                            .map_err(|_| {
+                                crate::error::Error::custom(&format!(
+                                    "Unknown currency unit: {}. Defaulting to sat.",
+                                    keyset.unit
+                                ))
+                            })
+                            .or(Ok(CurrencyUnit::Sat)),
+                    };
+                }
+            }
+        }
+
+        Ok(CurrencyUnit::Sat)
     }
 
     async fn select_proofs_for_amount(
