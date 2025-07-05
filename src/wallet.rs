@@ -21,13 +21,23 @@ pub struct CashuWalletClient {
 impl CashuWalletClient {
     pub async fn from_seed(mint_url: &str, seed: &str, db_name: &str) -> Result<Self> {
         let s = Mnemonic::from_str(seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
-        CashuWalletClient::wallet(mint_url, s, db_name).await
+        CashuWalletClient::wallet(mint_url, s, db_name, cdk::nuts::CurrencyUnit::Msat).await
+    }
+
+    pub async fn from_seed_with_unit(
+        mint_url: &str,
+        seed: &str,
+        db_name: &str,
+        unit: cdk::nuts::CurrencyUnit,
+    ) -> Result<Self> {
+        let s = Mnemonic::from_str(seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
+        CashuWalletClient::wallet(mint_url, s, db_name, unit).await
     }
 
     pub async fn new(mint_url: &str, seed: &mut String, db_name: &str) -> Result<Self> {
         let s = Mnemonic::generate(12).map_err(|_| Error::custom("Failed to generate mnemonic"))?;
         seed.push_str(&s.to_string());
-        CashuWalletClient::wallet(mint_url, s, db_name).await
+        CashuWalletClient::wallet(mint_url, s, db_name, cdk::nuts::CurrencyUnit::Msat).await
     }
 
     pub async fn send(&self, amount: u64) -> Result<String> {
@@ -66,7 +76,12 @@ impl CashuWalletClient {
             .collect())
     }
 
-    async fn wallet(mint_url: &str, s: Mnemonic, db_name: &str) -> Result<Self> {
+    async fn wallet(
+        mint_url: &str,
+        s: Mnemonic,
+        db_name: &str,
+        unit: cdk::nuts::CurrencyUnit,
+    ) -> Result<Self> {
         let home_dir =
             home::home_dir().ok_or_else(|| Error::custom("Could not determine home directory"))?;
         let localstore = WalletRedbDatabase::new(&home_dir.join(db_name)).unwrap();
@@ -76,7 +91,7 @@ impl CashuWalletClient {
             .map_err(|_| Error::custom("Invalid mint URL"))?;
         let mut builder = WalletBuilder::new()
             .mint_url(mint_url.clone())
-            .unit(cdk::nuts::CurrencyUnit::Msat)
+            .unit(unit)
             .localstore(Arc::new(localstore))
             .seed(&seed);
         let http_client = HttpClient::new(mint_url);

@@ -84,7 +84,6 @@ impl LocalConfig {
         let config_file = Self::config_file()?;
         if config_file.exists() {
             let content = fs::read_to_string(&config_file)?;
-            println!("{:?}", content);
             let config: LocalConfig = serde_yaml::from_str(&content)?;
             Ok(config)
         } else {

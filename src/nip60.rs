@@ -1071,7 +1071,6 @@ impl Nip60Wallet {
         } else {
             self.determine_unit_from_proofs(mint_url, &proofs)?
         };
-        println!("{}", currency_unit);
 
         let token = Token::new(
             MintUrl::from_str(mint_url)
@@ -1289,7 +1288,6 @@ impl Nip60Wallet {
             .mint_url()
             .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
             .to_string();
-        let _total_input_amount = self.calculate_token_amount(&parsed_token)?;
 
         let is_trusted_mint = self.mints.iter().any(|m| m.clone() == mint_url);
         if !is_trusted_mint {
@@ -1298,17 +1296,44 @@ impl Nip60Wallet {
             ));
         }
 
+        let mint_unit = if let Some(mint_info) = self.get_mint_info(&mint_url) {
+            if let Some(active_keyset) = mint_info.keysets.iter().find(|k| k.active) {
+                match active_keyset.unit.as_str() {
+                    "sat" => cdk::nuts::CurrencyUnit::Sat,
+                    "msat" => cdk::nuts::CurrencyUnit::Msat,
+                    "usd" => cdk::nuts::CurrencyUnit::Usd,
+                    "eur" => cdk::nuts::CurrencyUnit::Eur,
+                    _ => cdk::nuts::CurrencyUnit::from_str(&active_keyset.unit)
+                        .unwrap_or(cdk::nuts::CurrencyUnit::Sat),
+                }
+            } else if let Some(first_keyset) = mint_info.keysets.first() {
+                match first_keyset.unit.as_str() {
+                    "sat" => cdk::nuts::CurrencyUnit::Sat,
+                    "msat" => cdk::nuts::CurrencyUnit::Msat,
+                    "usd" => cdk::nuts::CurrencyUnit::Usd,
+                    "eur" => cdk::nuts::CurrencyUnit::Eur,
+                    _ => cdk::nuts::CurrencyUnit::from_str(&first_keyset.unit)
+                        .unwrap_or(cdk::nuts::CurrencyUnit::Sat),
+                }
+            } else {
+                cdk::nuts::CurrencyUnit::Sat
+            }
+        } else {
+            parsed_token.unit().unwrap_or(cdk::nuts::CurrencyUnit::Sat)
+        };
+
         let temp_mnemonic = Mnemonic::generate(12).map_err(|e| {
             crate::error::Error::custom(&format!("Failed to generate mnemonic: {}", e))
         })?;
         let temp_seed = temp_mnemonic.to_string();
         let temp_db_name = format!("temp_redeem_{}", crate::crypto::generate_random_secret());
 
-        let temp_wallet = CashuWalletClient::from_seed(&mint_url, &temp_seed, &temp_db_name)
-            .await
-            .map_err(|e| {
-                crate::error::Error::custom(&format!("Failed to create temp wallet: {}", e))
-            })?;
+        let temp_wallet =
+            CashuWalletClient::from_seed_with_unit(&mint_url, &temp_seed, &temp_db_name, mint_unit)
+                .await
+                .map_err(|e| {
+                    crate::error::Error::custom(&format!("Failed to create temp wallet: {}", e))
+                })?;
 
         temp_wallet
             .receive(token_string)
