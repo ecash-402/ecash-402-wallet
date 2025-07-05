@@ -1,8 +1,10 @@
 use crate::error::Result;
 use crate::mint::{KeysetInfo, MintClient};
+use crate::wallet::CashuWalletClient;
+use bip39::Mnemonic;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::nuts::{Proof, Proofs};
+use cdk::nuts::Proofs;
 
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -1171,64 +1173,46 @@ impl Nip60Wallet {
             .mint_url()
             .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
             .to_string();
-        let input_proofs = parsed_token.proofs();
-        let total_input_amount = self.calculate_token_amount(&parsed_token)?;
+        let _total_input_amount = self.calculate_token_amount(&parsed_token)?;
 
-        let _is_trusted_mint = self.mints.iter().any(|m| m.clone() == mint_url);
-
-        // Validate proofs at the mint if it's trusted
-        // let valid_input_proofs = if is_trusted_mint {
-        //     let mint_client = MintClient::new(&mint_url)?;
-        //     match mint_client.validate_proofs(&input_proofs).await {
-        //         Ok(valid_proofs) if valid_proofs.len() == input_proofs.len() => valid_proofs,
-        //         _ => {
-        //             return Err(crate::error::Error::custom(
-        //                 "Some proofs are already spent at the mint",
-        //             ));
-        //         }
-        //     }
-        // } else {
-        //     input_proofs
-        // };
-
-        // Get the active keyset for this mint
-        let active_keysets = self.get_active_keysets(&mint_url);
-        if active_keysets.is_empty() {
+        let is_trusted_mint = self.mints.iter().any(|m| m.clone() == mint_url);
+        if !is_trusted_mint {
             return Err(crate::error::Error::custom(
-                "No active keysets found for mint",
+                "Cannot redeem tokens from untrusted mint",
             ));
         }
-        let keyset_id = &active_keysets[0].id;
 
-        // Create blinded messages for the same amount using crypto module
-        let blinded_messages =
-            crate::crypto::create_blinded_messages_for_amount(total_input_amount, keyset_id)?;
+        let temp_mnemonic = Mnemonic::generate(12).map_err(|e| {
+            crate::error::Error::custom(&format!("Failed to generate mnemonic: {}", e))
+        })?;
+        let temp_seed = temp_mnemonic.to_string();
+        let temp_db_name = format!("temp_redeem_{}", crate::crypto::generate_random_secret());
 
-        // Use swap_tokens to exchange old proofs for new signatures
-        let mint_client = MintClient::new(&mint_url)?;
-        let swap_response = mint_client
-            .swap_tokens(input_proofs, blinded_messages)
-            .await?;
+        let temp_wallet = CashuWalletClient::from_seed(&mint_url, &temp_seed, &temp_db_name)
+            .await
+            .map_err(|e| {
+                crate::error::Error::custom(&format!("Failed to create temp wallet: {}", e))
+            })?;
 
-        // Create new proofs from the signatures
-        let mut final_proofs = Vec::new();
-        for signature in &swap_response.signatures {
-            let secret = crate::crypto::generate_random_secret();
-            let proof = Proof {
-                amount: signature.amount,
-                keyset_id: signature.keyset_id.clone(),
-                secret: cdk::secret::Secret::new(secret),
-                c: signature.c,
-                witness: None,
-                dleq: None,
-            };
-            final_proofs.push(proof);
-        }
+        temp_wallet
+            .receive(token_string)
+            .await
+            .map_err(|e| crate::error::Error::custom(&format!("Failed to redeem token: {}", e)))?;
 
-        let final_amount = final_proofs
-            .iter()
-            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
-            .sum::<u64>();
+        let balance_str = temp_wallet
+            .balance()
+            .await
+            .map_err(|e| crate::error::Error::custom(&format!("Failed to get balance: {}", e)))?;
+        let redeemed_amount: u64 = balance_str
+            .parse()
+            .map_err(|e| crate::error::Error::custom(&format!("Failed to parse balance: {}", e)))?;
+
+        let new_token_string = temp_wallet.send(redeemed_amount).await.map_err(|e| {
+            crate::error::Error::custom(&format!("Failed to send from temp wallet: {}", e))
+        })?;
+
+        let new_parsed_token = self.parse_cashu_token(&new_token_string)?;
+        let final_proofs = new_parsed_token.proofs();
 
         let token_event_id = self
             .create_token_event(&mint_url, final_proofs, vec![])
@@ -1241,10 +1225,10 @@ impl Nip60Wallet {
             "created".to_string(),
         )];
 
-        self.create_spending_history("in", final_amount, event_refs)
+        self.create_spending_history("in", redeemed_amount, event_refs)
             .await?;
 
-        Ok(final_amount)
+        Ok(redeemed_amount)
     }
 
     async fn select_proofs_for_exact_amount(
