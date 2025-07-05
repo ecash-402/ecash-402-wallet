@@ -14,17 +14,21 @@ impl MainWidget {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Min(8),
-                Constraint::Length(8),
-                Constraint::Length(3),
+                Constraint::Length(3), // Header
+                Constraint::Length(5), // General wallet info
+                Constraint::Length(5), // Selected mint balance
+                Constraint::Min(8),    // Main content (mint list)
+                Constraint::Length(8), // Navigation
+                Constraint::Length(3), // Help
             ])
             .split(area);
 
         Self::render_header(f, state, chunks[0]);
-        Self::render_main_content(f, state, chunks[1]);
-        Self::render_navigation(f, chunks[2]);
-        Self::render_help(f, chunks[3]);
+        Self::render_general_wallet_info(f, state, chunks[1]);
+        Self::render_selected_mint_info(f, state, chunks[2]);
+        Self::render_mint_list(f, state, chunks[3]);
+        Self::render_navigation(f, chunks[4]);
+        Self::render_help(f, chunks[5]);
     }
 
     fn render_header(f: &mut Frame, state: &AppState, area: Rect) {
@@ -46,53 +50,8 @@ impl MainWidget {
         f.render_widget(header, area);
     }
 
-    fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-
-        Self::render_wallet_info(f, state, chunks[0]);
-        Self::render_mint_info(f, state, chunks[1]);
-    }
-
-    fn render_wallet_info(f: &mut Frame, state: &AppState, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(4)])
-            .split(area);
-
+    fn render_general_wallet_info(f: &mut Frame, state: &AppState, area: Rect) {
         if let Some(wallet) = state.get_active_wallet() {
-            let (balance, unit) = state.get_display_balance_info();
-
-            let balance_text = format!("Balance: {} {}", format_amount(balance), unit);
-            let balance_paragraph = Paragraph::new(balance_text)
-                .style(create_normal_style())
-                .alignment(Alignment::Center)
-                .block(
-                    Block::default()
-                        .title("Selected Mint Balance")
-                        .borders(Borders::ALL),
-                );
-
-            f.render_widget(balance_paragraph, chunks[0]);
-
-            let selected_mint_url = state
-                .get_selected_mint_url()
-                .unwrap_or_else(|| "No mint selected".to_string());
-
-            let mut info_items = vec![
-                format!("Wallet: {}", wallet.config.name),
-                format!("Selected Mint: {}", selected_mint_url),
-                format!("Balance: {} {}", balance, unit),
-                format!("Total Mints: {}", wallet.config.mints.len()),
-                format!("Relays: {}", wallet.config.relays.len()),
-            ];
-
-            if let Some(error) = &wallet.error {
-                info_items.push(format!("Error: {}", error));
-            }
-
             let last_update = format_timestamp(
                 wallet
                     .last_update
@@ -100,17 +59,26 @@ impl MainWidget {
                     .unwrap_or_default()
                     .as_secs(),
             );
-            info_items.push(format!("Last update: {}", last_update));
+
+            let info_items = vec![
+                format!("Wallet: {}", wallet.config.name),
+                format!("Total Mints: {}", wallet.config.mints.len()),
+                format!("Relays: {}", wallet.config.relays.len()),
+                format!("Last update: {}", last_update),
+            ];
 
             let info_list: Vec<ListItem> = info_items
                 .into_iter()
                 .map(|item| ListItem::new(item).style(create_normal_style()))
                 .collect();
 
-            let info_widget = List::new(info_list)
-                .block(Block::default().title("Wallet Info").borders(Borders::ALL));
+            let info_widget = List::new(info_list).block(
+                Block::default()
+                    .title("Wallet Information")
+                    .borders(Borders::ALL),
+            );
 
-            f.render_widget(info_widget, chunks[1]);
+            f.render_widget(info_widget, area);
         } else {
             let no_wallet_text =
                 Paragraph::new("No wallet selected\n\nPress 'w' to manage wallets")
@@ -123,11 +91,53 @@ impl MainWidget {
                             .borders(Borders::ALL),
                     );
 
-            f.render_widget(no_wallet_text, chunks[0]);
+            f.render_widget(no_wallet_text, area);
         }
     }
 
-    fn render_mint_info(f: &mut Frame, state: &AppState, area: Rect) {
+    fn render_selected_mint_info(f: &mut Frame, state: &AppState, area: Rect) {
+        if let Some(wallet) = state.get_active_wallet() {
+            let (balance, unit) = state.get_display_balance_info();
+            let selected_mint_url = state
+                .get_selected_mint_url()
+                .unwrap_or_else(|| "No mint selected".to_string());
+
+            let mut info_items = vec![
+                format!("Selected Mint: {}", selected_mint_url),
+                format!("Balance: {} {}", balance, unit),
+            ];
+
+            if let Some(error) = &wallet.error {
+                info_items.push(format!("Error: {}", error));
+            }
+
+            let info_list: Vec<ListItem> = info_items
+                .into_iter()
+                .map(|item| ListItem::new(item).style(create_normal_style()))
+                .collect();
+
+            let info_widget = List::new(info_list).block(
+                Block::default()
+                    .title("Selected Mint")
+                    .borders(Borders::ALL),
+            );
+
+            f.render_widget(info_widget, area);
+        } else {
+            let no_mint_text = Paragraph::new("No mint selected")
+                .style(create_normal_style())
+                .alignment(Alignment::Center)
+                .block(
+                    Block::default()
+                        .title("Selected Mint")
+                        .borders(Borders::ALL),
+                );
+
+            f.render_widget(no_mint_text, area);
+        }
+    }
+
+    fn render_mint_list(f: &mut Frame, state: &AppState, area: Rect) {
         if let Some(wallet) = state.get_active_wallet() {
             let mint_items: Vec<ListItem> = wallet
                 .config
