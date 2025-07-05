@@ -314,7 +314,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             relays,
             mints,
         } => {
-            // Load local config and merge with command line args
             let local_config = LocalConfig::load().unwrap_or_default();
             let (final_relays, final_mints, final_private_key) =
                 local_config.merge_with_args(relays, mints, private_key);

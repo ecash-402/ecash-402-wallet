@@ -35,6 +35,7 @@ pub struct WalletStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletConfig {
+    pub privkey: Option<String>,
     pub mints: Vec<String>,
 }
 
@@ -312,9 +313,33 @@ impl Nip60Wallet {
                 .await
                 .map_err(|e| crate::error::Error::custom(&format!("Decryption failed: {}", e)))?;
 
-            let config: WalletConfig = serde_json::from_str(&decrypted).map_err(|e| {
-                crate::error::Error::custom(&format!("Invalid wallet config: {}", e))
-            })?;
+            let config: WalletConfig = match serde_json::from_str::<WalletConfig>(&decrypted) {
+                Ok(config) => config,
+                Err(_) => match serde_json::from_str::<Vec<Vec<String>>>(&decrypted) {
+                    Ok(nip60_array) => {
+                        let mut privkey = None;
+                        let mut mints = Vec::new();
+
+                        for pair in nip60_array {
+                            if pair.len() == 2 {
+                                match pair[0].as_str() {
+                                    "privkey" => privkey = Some(pair[1].clone()),
+                                    "mint" => mints.push(pair[1].clone()),
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        WalletConfig { privkey, mints }
+                    }
+                    Err(e) => {
+                        return Err(crate::error::Error::custom(&format!(
+                            "Invalid wallet config format: {}",
+                            e
+                        )));
+                    }
+                },
+            };
 
             let mut wallet = Self {
                 client,
@@ -330,11 +355,13 @@ impl Nip60Wallet {
 
     /// Publish wallet configuration to Nostr (kind 17375)
     async fn publish_wallet_config(&self) -> Result<()> {
-        let config = WalletConfig {
-            mints: self.mints.clone(),
-        };
+        let mut nip60_config = Vec::new();
 
-        let content_json = serde_json::to_string(&config)
+        for mint in &self.mints {
+            nip60_config.push(vec!["mint".to_string(), mint.clone()]);
+        }
+
+        let content_json = serde_json::to_string(&nip60_config)
             .map_err(|e| crate::error::Error::custom(&format!("Serialization failed: {}", e)))?;
 
         let signer = self
@@ -353,12 +380,7 @@ impl Nip60Wallet {
             .await
             .map_err(|e| crate::error::Error::custom(&format!("Encryption failed: {}", e)))?;
 
-        let mut tags = Vec::new();
-        for mint in &self.mints {
-            tags.push(Tag::custom(TagKind::Custom("mint".into()), [mint]));
-        }
-
-        let event_builder = EventBuilder::new(kinds::WALLET, encrypted_content).tags(tags);
+        let event_builder = EventBuilder::new(kinds::WALLET, encrypted_content);
 
         self.client
             .send_event_builder(event_builder)
@@ -550,7 +572,7 @@ impl Nip60Wallet {
 
             for proof in &token_data.proofs {
                 let secret_str = proof.secret.to_string();
-                let hex_secret = if let Ok(secret_bytes) = base64.decode(&secret_str) {
+                let _hex_secret = if let Ok(secret_bytes) = base64.decode(&secret_str) {
                     hex::encode(secret_bytes)
                 } else {
                     secret_str
@@ -765,10 +787,29 @@ impl Nip60Wallet {
         amount: u64,
         event_refs: Vec<(String, String, String, String)>,
     ) -> Result<()> {
+        let mut encrypted_event_refs = Vec::new();
+        let mut unencrypted_tags = Vec::new();
+
+        for (tag_name, event_id, relay, marker) in &event_refs {
+            if marker == "redeemed" {
+                unencrypted_tags.push(Tag::custom(
+                    TagKind::Custom(tag_name.clone().into()),
+                    [event_id, relay, marker],
+                ));
+            } else {
+                encrypted_event_refs.push((
+                    tag_name.clone(),
+                    event_id.clone(),
+                    relay.clone(),
+                    marker.clone(),
+                ));
+            }
+        }
+
         let history = SpendingHistory {
             direction: direction.to_string(),
             amount: amount.to_string(),
-            events: event_refs.clone(),
+            events: encrypted_event_refs,
             created_at: Some(Timestamp::now().as_u64()),
         };
 
@@ -791,18 +832,8 @@ impl Nip60Wallet {
             .await
             .map_err(|e| crate::error::Error::custom(&format!("Encryption failed: {}", e)))?;
 
-        let mut tags = Vec::new();
-        for (tag_name, event_id, relay, marker) in &event_refs {
-            if marker == "redeemed" {
-                tags.push(Tag::custom(
-                    TagKind::Custom(tag_name.clone().into()),
-                    [event_id, relay, marker],
-                ));
-            }
-        }
-
         let event_builder =
-            EventBuilder::new(kinds::SPENDING_HISTORY, encrypted_content).tags(tags);
+            EventBuilder::new(kinds::SPENDING_HISTORY, encrypted_content).tags(unencrypted_tags);
 
         self.client
             .send_event_builder(event_builder)
@@ -1159,6 +1190,7 @@ impl Nip60Wallet {
     pub fn get_config(&self) -> WalletConfig {
         WalletConfig {
             mints: self.mints.clone(),
+            privkey: None,
         }
     }
 
@@ -1193,15 +1225,51 @@ impl Nip60Wallet {
         let mint_url =
             target_mint.unwrap_or_else(|| self.mints.first().cloned().unwrap_or_default());
 
-        let (selected_proofs, consumed_proofs, spent_event_ids) = self
+        let (selected_proofs, all_consumed_proofs, spent_event_ids) = self
             .select_proofs_for_exact_amount(amount, &mint_url)
             .await?;
 
         let token_string =
-            self.create_cashu_token_string(&mint_url, selected_proofs, memo, None)?;
+            self.create_cashu_token_string(&mint_url, selected_proofs.clone(), memo, None)?;
 
-        self.mark_proofs_as_spent(&consumed_proofs, &spent_event_ids)
+        let remaining_proofs: Vec<_> = all_consumed_proofs
+            .into_iter()
+            .filter(|proof| !selected_proofs.iter().any(|sp| sp.c == proof.c))
+            .collect();
+
+        let mut event_refs = Vec::new();
+        for event_id in &spent_event_ids {
+            event_refs.push((
+                "e".to_string(),
+                event_id.to_hex(),
+                "".to_string(),
+                "destroyed".to_string(),
+            ));
+        }
+
+        if !remaining_proofs.is_empty() {
+            let new_token_event_id = self
+                .create_rollover_token_event(remaining_proofs, &spent_event_ids)
+                .await?;
+            event_refs.push((
+                "e".to_string(),
+                new_token_event_id.to_hex(),
+                "".to_string(),
+                "created".to_string(),
+            ));
+        }
+
+        let total_amount: u64 = selected_proofs
+            .iter()
+            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
+            .sum();
+
+        self.create_spending_history("out", total_amount, event_refs)
             .await?;
+
+        for event_id in &spent_event_ids {
+            self.delete_token_event(event_id).await?;
+        }
 
         Ok(token_string)
     }
@@ -1429,36 +1497,6 @@ impl Nip60Wallet {
         Ok(proofs)
     }
 
-    async fn mark_proofs_as_spent(
-        &self,
-        spent_proofs: &Proofs,
-        spent_event_ids: &[EventId],
-    ) -> Result<()> {
-        let mut event_refs = Vec::new();
-        for event_id in spent_event_ids {
-            event_refs.push((
-                "e".to_string(),
-                event_id.to_hex(),
-                "".to_string(),
-                "destroyed".to_string(),
-            ));
-        }
-
-        let total_amount: u64 = spent_proofs
-            .iter()
-            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
-            .sum();
-
-        self.create_spending_history("out", total_amount, event_refs)
-            .await?;
-
-        for event_id in spent_event_ids {
-            self.delete_token_event(event_id).await?;
-        }
-
-        Ok(())
-    }
-
     pub async fn get_event_history_by_mint(
         &self,
         mint_url: Option<String>,
@@ -1483,10 +1521,8 @@ impl Nip60Wallet {
             );
         }
 
-        // Get all spending history events
         let spending_history = self.get_spending_history().await?;
 
-        // Process each spending history event
         for history in spending_history {
             for (mint, _, amount, event_id) in history.events {
                 if let Some(entry) = history_by_mint.get_mut(&mint) {
@@ -1497,7 +1533,7 @@ impl Nip60Wallet {
                         direction: history.direction.clone(),
                         amount: amount_value,
                         timestamp: history.created_at.unwrap_or(0),
-                        memo: None, // Could be extended to include memo if available
+                        memo: None,
                     };
 
                     if history.direction == "in" {
@@ -1511,7 +1547,6 @@ impl Nip60Wallet {
             }
         }
 
-        // Sort events by timestamp (newest first)
         for history in history_by_mint.values_mut() {
             history.events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         }
