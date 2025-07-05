@@ -1,0 +1,187 @@
+use crate::tui::state::AppState;
+use crate::tui::widgets::{
+    create_normal_style, create_selected_style, create_title_style, format_amount, format_timestamp,
+};
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+};
+
+pub struct MainWidget;
+
+impl MainWidget {
+    pub fn render(f: &mut Frame, state: &AppState, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(8),
+                Constraint::Length(8),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+        Self::render_header(f, state, chunks[0]);
+        Self::render_main_content(f, state, chunks[1]);
+        Self::render_navigation(f, chunks[2]);
+        Self::render_help(f, chunks[3]);
+    }
+
+    fn render_header(f: &mut Frame, state: &AppState, area: Rect) {
+        let title = if let Some(wallet) = state.get_active_wallet() {
+            format!(
+                "NIP-60 Wallet - {} [{}]",
+                wallet.config.name,
+                if state.loading { "Loading..." } else { "Ready" }
+            )
+        } else {
+            "NIP-60 Wallet - No wallet selected".to_string()
+        };
+
+        let header = Paragraph::new(title)
+            .style(create_title_style())
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
+
+        f.render_widget(header, area);
+    }
+
+    fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+
+        Self::render_wallet_info(f, state, chunks[0]);
+        Self::render_mint_info(f, state, chunks[1]);
+    }
+
+    fn render_wallet_info(f: &mut Frame, state: &AppState, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Min(4)])
+            .split(area);
+
+        if let Some(wallet) = state.get_active_wallet() {
+            let balance_text = format!("Balance: {} sats", format_amount(wallet.balance));
+            let balance_paragraph = Paragraph::new(balance_text)
+                .style(create_normal_style())
+                .alignment(Alignment::Center)
+                .block(
+                    Block::default()
+                        .title("Wallet Balance")
+                        .borders(Borders::ALL),
+                );
+
+            f.render_widget(balance_paragraph, chunks[0]);
+
+            let mut info_items = vec![
+                format!("Wallet: {}", wallet.config.name),
+                format!("Balance: {} sats", wallet.balance),
+                format!("Mints: {}", wallet.config.mints.len()),
+                format!("Relays: {}", wallet.config.relays.len()),
+            ];
+
+            if let Some(error) = &wallet.error {
+                info_items.push(format!("Error: {}", error));
+            }
+
+            let last_update = format_timestamp(
+                wallet
+                    .last_update
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            );
+            info_items.push(format!("Last update: {}", last_update));
+
+            let info_list: Vec<ListItem> = info_items
+                .into_iter()
+                .map(|item| ListItem::new(item).style(create_normal_style()))
+                .collect();
+
+            let info_widget = List::new(info_list)
+                .block(Block::default().title("Wallet Info").borders(Borders::ALL));
+
+            f.render_widget(info_widget, chunks[1]);
+        } else {
+            let no_wallet_text =
+                Paragraph::new("No wallet selected\n\nPress 'w' to manage wallets")
+                    .style(create_normal_style())
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true })
+                    .block(
+                        Block::default()
+                            .title("Wallet Status")
+                            .borders(Borders::ALL),
+                    );
+
+            f.render_widget(no_wallet_text, chunks[0]);
+        }
+    }
+
+    fn render_mint_info(f: &mut Frame, state: &AppState, area: Rect) {
+        if let Some(wallet) = state.get_active_wallet() {
+            let mint_items: Vec<ListItem> = wallet
+                .config
+                .mints
+                .iter()
+                .enumerate()
+                .map(|(i, mint)| {
+                    let style = if i == state.selected_wallet_index {
+                        create_selected_style()
+                    } else {
+                        create_normal_style()
+                    };
+                    ListItem::new(format!("• {}", mint)).style(style)
+                })
+                .collect();
+
+            let mint_list = List::new(mint_items).block(
+                Block::default()
+                    .title("Configured Mints")
+                    .borders(Borders::ALL),
+            );
+
+            f.render_widget(mint_list, area);
+        } else {
+            let no_mints_text = Paragraph::new("No mints configured")
+                .style(create_normal_style())
+                .alignment(Alignment::Center)
+                .block(Block::default().title("Mints").borders(Borders::ALL));
+
+            f.render_widget(no_mints_text, area);
+        }
+    }
+
+    fn render_navigation(f: &mut Frame, area: Rect) {
+        let nav_items = vec![
+            "h: History",
+            "s: Send",
+            "r: Redeem",
+            "l: Lightning",
+            "w: Wallets",
+            "R: Refresh",
+            "Tab: Switch Wallet",
+        ];
+
+        let nav_text = nav_items.join(" | ");
+        let nav_paragraph = Paragraph::new(nav_text)
+            .style(create_normal_style())
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(Block::default().title("Navigation").borders(Borders::ALL));
+
+        f.render_widget(nav_paragraph, area);
+    }
+
+    fn render_help(f: &mut Frame, area: Rect) {
+        let help_text =
+            "Press q or Ctrl+Q to quit • Use h/j/k/l for vim-style navigation • ESC to go back";
+        let help_paragraph = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+
+        f.render_widget(help_paragraph, area);
+    }
+}

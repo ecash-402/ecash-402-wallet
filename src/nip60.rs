@@ -149,6 +149,15 @@ pub struct Nip60Wallet {
     mint_infos: HashMap<String, MintInfo>,
 }
 
+impl std::fmt::Debug for Nip60Wallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Nip60Wallet")
+            .field("mints", &self.mints)
+            .field("mint_infos", &self.mint_infos)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MintInfo {
     pub async fn from_url(url: String) -> Result<Self> {
         let client = MintClient::new(&url)?;

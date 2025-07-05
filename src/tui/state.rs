@@ -1,0 +1,289 @@
+use crate::error::Result;
+use crate::nip60::{Nip60Wallet, SpendingHistory, WalletState};
+use crate::tui::config::{Config, WalletConfig};
+use nostr_sdk::prelude::*;
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveView {
+    Main,
+    History,
+    Send,
+    Redeem,
+    Lightning,
+    WalletManager,
+    AddWallet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryFilter {
+    All,
+    Received,
+    Sent,
+}
+
+#[derive(Debug)]
+pub struct WalletInstance {
+    pub config: WalletConfig,
+    pub wallet: Option<Nip60Wallet>,
+    pub state: Option<WalletState>,
+    pub balance: u64,
+    pub history: Vec<SpendingHistory>,
+    pub last_update: SystemTime,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SendState {
+    pub amount_input: String,
+    pub memo_input: String,
+    pub generated_token: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RedeemState {
+    pub token_input: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LightningState {
+    pub amount_input: String,
+    pub description_input: String,
+    pub invoice: Option<String>,
+    pub qr_code: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AddWalletState {
+    pub name_input: String,
+    pub nsec_input: String,
+    pub mints_input: String,
+    pub relays_input: String,
+    pub error: Option<String>,
+    pub step: u8,
+}
+
+pub struct AppState {
+    pub config: Config,
+    pub wallets: HashMap<String, WalletInstance>,
+    pub active_view: ActiveView,
+    pub history_filter: HistoryFilter,
+    pub send_state: SendState,
+    pub redeem_state: RedeemState,
+    pub lightning_state: LightningState,
+    pub add_wallet_state: AddWalletState,
+    pub selected_wallet_index: usize,
+    pub selected_history_index: usize,
+    pub loading: bool,
+    pub error_message: Option<String>,
+    pub last_refresh: SystemTime,
+}
+
+impl Default for SendState {
+    fn default() -> Self {
+        Self {
+            amount_input: String::new(),
+            memo_input: String::new(),
+            generated_token: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for RedeemState {
+    fn default() -> Self {
+        Self {
+            token_input: String::new(),
+            result: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for LightningState {
+    fn default() -> Self {
+        Self {
+            amount_input: String::new(),
+            description_input: String::new(),
+            invoice: None,
+            qr_code: None,
+            error: None,
+        }
+    }
+}
+
+impl Default for AddWalletState {
+    fn default() -> Self {
+        Self {
+            name_input: String::new(),
+            nsec_input: String::new(),
+            mints_input: String::new(),
+            relays_input: String::new(),
+            error: None,
+            step: 0,
+        }
+    }
+}
+
+impl AppState {
+    pub async fn new() -> Result<Self> {
+        let config = Config::load()?;
+        let mut wallets = HashMap::new();
+
+        for wallet_config in &config.wallets {
+            wallets.insert(
+                wallet_config.name.clone(),
+                WalletInstance {
+                    config: wallet_config.clone(),
+                    wallet: None,
+                    state: None,
+                    balance: 0,
+                    history: Vec::new(),
+                    last_update: SystemTime::now(),
+                    error: None,
+                },
+            );
+        }
+
+        Ok(Self {
+            config,
+            wallets,
+            active_view: ActiveView::Main,
+            history_filter: HistoryFilter::All,
+            send_state: SendState::default(),
+            redeem_state: RedeemState::default(),
+            lightning_state: LightningState::default(),
+            add_wallet_state: AddWalletState::default(),
+            selected_wallet_index: 0,
+            selected_history_index: 0,
+            loading: false,
+            error_message: None,
+            last_refresh: SystemTime::now(),
+        })
+    }
+
+    pub fn get_active_wallet(&self) -> Option<&WalletInstance> {
+        self.config
+            .get_active_wallet()
+            .and_then(|config| self.wallets.get(&config.name))
+    }
+
+    pub fn get_active_wallet_mut(&mut self) -> Option<&mut WalletInstance> {
+        if let Some(config) = self.config.get_active_wallet() {
+            let name = config.name.clone();
+            self.wallets.get_mut(&name)
+        } else {
+            None
+        }
+    }
+
+    pub async fn load_wallet(&mut self, name: &str) -> Result<()> {
+        if let Some(wallet_instance) = self.wallets.get_mut(name) {
+            if wallet_instance.wallet.is_none() {
+                let keys = Keys::parse(&wallet_instance.config.nsec)?;
+                let relays: Vec<&str> = wallet_instance
+                    .config
+                    .relays
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect();
+                let mints = wallet_instance.config.mints.clone();
+
+                match Nip60Wallet::from_config(keys, relays, mints).await {
+                    Ok(wallet) => {
+                        wallet_instance.wallet = Some(wallet);
+                        self.refresh_wallet_data(name).await?;
+                    }
+                    Err(e) => {
+                        wallet_instance.error = Some(format!("Failed to load wallet: {}", e));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn refresh_wallet_data(&mut self, name: &str) -> Result<()> {
+        if let Some(wallet_instance) = self.wallets.get_mut(name) {
+            if let Some(ref wallet) = wallet_instance.wallet {
+                wallet_instance.last_update = SystemTime::now();
+
+                match wallet.get_balance().await {
+                    Ok(balance) => {
+                        wallet_instance.balance = balance;
+                        wallet_instance.error = None;
+                    }
+                    Err(e) => {
+                        wallet_instance.error = Some(format!("Failed to get balance: {}", e));
+                    }
+                }
+
+                match wallet.get_spending_history().await {
+                    Ok(history) => {
+                        wallet_instance.history = history;
+                    }
+                    Err(e) => {
+                        wallet_instance.error = Some(format!("Failed to get history: {}", e));
+                    }
+                }
+
+                match wallet.get_wallet_state().await {
+                    Ok(state) => {
+                        wallet_instance.state = Some(state);
+                    }
+                    Err(e) => {
+                        wallet_instance.error = Some(format!("Failed to get state: {}", e));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn refresh_all_wallets(&mut self) -> Result<()> {
+        let wallet_names: Vec<String> = self.wallets.keys().cloned().collect();
+        for name in wallet_names {
+            self.refresh_wallet_data(&name).await?;
+        }
+        self.last_refresh = SystemTime::now();
+        Ok(())
+    }
+
+    pub fn get_filtered_history(&self) -> Vec<&SpendingHistory> {
+        if let Some(wallet) = self.get_active_wallet() {
+            match self.history_filter {
+                HistoryFilter::All => wallet.history.iter().collect(),
+                HistoryFilter::Received => wallet
+                    .history
+                    .iter()
+                    .filter(|h| h.direction == "in")
+                    .collect(),
+                HistoryFilter::Sent => wallet
+                    .history
+                    .iter()
+                    .filter(|h| h.direction == "out")
+                    .collect(),
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn switch_view(&mut self, view: ActiveView) {
+        self.active_view = view;
+        self.error_message = None;
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error_message = None;
+    }
+
+    pub fn set_error(&mut self, message: String) {
+        self.error_message = Some(message);
+    }
+}
