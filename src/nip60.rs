@@ -1473,39 +1473,6 @@ impl Nip60Wallet {
         denominations
     }
 
-    async fn optimize_proof_denominations(
-        &self,
-        proofs: Proofs,
-        _mint_url: &str,
-    ) -> Result<Proofs> {
-        let total_amount: u64 = proofs
-            .iter()
-            .map(|p| p.amount.to_string().parse::<u64>().unwrap_or(0))
-            .sum();
-
-        let optimal_denoms = self.calculate_optimal_denominations(total_amount);
-
-        let mut current_denoms = std::collections::HashMap::new();
-        for proof in &proofs {
-            let amount = proof.amount.to_string().parse::<u64>().unwrap_or(0);
-            *current_denoms.entry(amount).or_insert(0) += 1;
-        }
-
-        let mut needs_optimization = false;
-        for (&denom, &optimal_count) in &optimal_denoms {
-            if current_denoms.get(&denom).unwrap_or(&0) != &optimal_count {
-                needs_optimization = true;
-                break;
-            }
-        }
-
-        if !needs_optimization {
-            return Ok(proofs);
-        }
-
-        Ok(proofs)
-    }
-
     pub async fn get_event_history_by_mint(
         &self,
         mint_url: Option<String>,
