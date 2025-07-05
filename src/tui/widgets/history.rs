@@ -1,11 +1,18 @@
 use crate::tui::state::{AppState, HistoryFilter};
 use crate::tui::widgets::{
-    create_normal_style, create_selected_style, create_title_style, format_amount, format_timestamp,
+    create_normal_style, create_selected_style, create_title_style, format_amount,
 };
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
+
+#[derive(Debug)]
+struct EventInfo {
+    event_id: String,
+    mint: String,
+    unit: String,
+}
 
 pub struct HistoryWidget;
 
@@ -116,31 +123,115 @@ impl HistoryWidget {
                     _ => "• ",
                 };
 
+                let direction_text = match transaction.direction.as_str() {
+                    "in" => "RECEIVED",
+                    "out" => "SENT",
+                    _ => "UNKNOWN",
+                };
+
                 let amount_str = if let Ok(amount) = transaction.amount.parse::<u64>() {
                     format_amount(amount)
                 } else {
                     transaction.amount.clone()
                 };
 
-                let timestamp_str = if let Some(created_at) = transaction.created_at {
-                    format_timestamp(created_at)
+                let created_date = if let Some(created_at) = transaction.created_at {
+                    let datetime = chrono::DateTime::from_timestamp(created_at as i64, 0)
+                        .unwrap_or_else(|| chrono::Utc::now());
+                    datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
                 } else {
-                    "Unknown".to_string()
+                    "Unknown date".to_string()
                 };
 
-                let transaction_text = format!(
-                    "{}{} sats - {}",
-                    direction_symbol, amount_str, timestamp_str
-                );
+                let event_info = Self::extract_event_info(transaction, state);
 
-                ListItem::new(transaction_text).style(style)
+                let transaction_lines = vec![
+                    format!(
+                        "{}{} | {} sats | {}",
+                        direction_symbol, direction_text, amount_str, created_date
+                    ),
+                    format!(
+                        "  Event: {} | Mint: {} | Unit: {}",
+                        event_info.event_id, event_info.mint, event_info.unit
+                    ),
+                ];
+
+                ListItem::new(transaction_lines.join("\n")).style(style)
             })
             .collect();
 
-        let history_list = List::new(history_items)
-            .block(Block::default().title("Transactions").borders(Borders::ALL));
+        let history_list = List::new(history_items).block(
+            Block::default()
+                .title("Transaction History")
+                .borders(Borders::ALL),
+        );
 
         f.render_widget(history_list, area);
+    }
+
+    fn extract_event_info(
+        transaction: &crate::nip60::SpendingHistory,
+        state: &AppState,
+    ) -> EventInfo {
+        let mut event_id = "N/A".to_string();
+        let mut mint = "Unknown".to_string();
+        let mut unit = "sat".to_string();
+
+        if !transaction.events.is_empty() {
+            if let Some((_, first_event_id, _, _)) = transaction.events.first() {
+                event_id = if first_event_id.len() > 16 {
+                    format!("{}...", &first_event_id[..16])
+                } else {
+                    first_event_id.clone()
+                };
+            }
+        }
+
+        // Extract mint and unit information using wallet state and token events
+        if let Some(active_wallet) = state.get_active_wallet() {
+            if let Some(wallet_state) = &active_wallet.state {
+                if let Some(nip60_wallet) = &active_wallet.wallet {
+                    // Try to determine mint and unit from token proofs
+                    if !wallet_state.proofs.is_empty() {
+                        // Get mint from the first proof's keyset info
+                        if let Some(first_proof) = wallet_state.proofs.first() {
+                            let keyset_id = &first_proof.keyset_id.to_string();
+
+                            // Look through all mint infos to find matching keyset
+                            for mint_info in nip60_wallet.get_all_mint_infos() {
+                                for keyset in &mint_info.keysets {
+                                    if keyset.id == *keyset_id {
+                                        mint = mint_info.url.clone();
+                                        unit = keyset.unit.clone();
+                                        break;
+                                    }
+                                }
+                                if mint != "Unknown" {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // If we still don't have mint info, try to get it from the configured mints
+                    if mint == "Unknown" {
+                        let all_mint_infos = nip60_wallet.get_all_mint_infos();
+                        if let Some(first_mint) = all_mint_infos.first() {
+                            mint = first_mint.url.clone();
+                            if let Some(first_keyset) = first_mint.keysets.first() {
+                                unit = first_keyset.unit.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        EventInfo {
+            event_id,
+            mint,
+            unit,
+        }
     }
 
     fn render_help(f: &mut Frame, area: Rect) {
