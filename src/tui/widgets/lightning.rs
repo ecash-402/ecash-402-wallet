@@ -29,9 +29,10 @@ impl LightningWidget {
 
     fn render_header(f: &mut Frame, state: &AppState, area: Rect) {
         let title = if let Some(wallet) = state.get_active_wallet() {
+            let (balance, unit) = state.get_display_balance_info();
             format!(
-                "Lightning Invoice - {} (Balance: {} sats)",
-                wallet.config.name, wallet.balance
+                "Lightning Invoice - {} (Balance: {} {})",
+                wallet.config.name, balance, unit
             )
         } else {
             "Lightning Invoice - No wallet selected".to_string()

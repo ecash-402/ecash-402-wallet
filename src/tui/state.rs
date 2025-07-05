@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::nip60::{Nip60Wallet, SpendingHistory, WalletState};
+use crate::nip60::{Nip60Wallet, ProofBreakdown, SpendingHistory, WalletState};
 use crate::tui::config::{Config, WalletConfig};
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
@@ -30,6 +30,7 @@ pub struct WalletInstance {
     pub state: Option<WalletState>,
     pub balance: u64,
     pub history: Vec<SpendingHistory>,
+    pub mint_breakdowns: Vec<ProofBreakdown>,
     pub last_update: SystemTime,
     pub error: Option<String>,
 }
@@ -78,6 +79,7 @@ pub struct AppState {
     pub lightning_state: LightningState,
     pub add_wallet_state: AddWalletState,
     pub selected_wallet_index: usize,
+    pub selected_mint_index: usize,
     pub selected_history_index: usize,
     pub loading: bool,
     pub error_message: Option<String>,
@@ -144,6 +146,7 @@ impl AppState {
                     state: None,
                     balance: 0,
                     history: Vec::new(),
+                    mint_breakdowns: Vec::new(),
                     last_update: SystemTime::now(),
                     error: None,
                 },
@@ -160,6 +163,7 @@ impl AppState {
             lightning_state: LightningState::default(),
             add_wallet_state: AddWalletState::default(),
             selected_wallet_index: 0,
+            selected_mint_index: 0,
             selected_history_index: 0,
             loading: false,
             error_message: None,
@@ -203,6 +207,9 @@ impl AppState {
                         wallet_instance.error = Some(format!("Failed to load wallet: {}", e));
                     }
                 }
+            } else {
+                // Wallet already loaded, just refresh the data
+                self.refresh_wallet_data(name).await?;
             }
         }
         Ok(())
@@ -238,6 +245,15 @@ impl AppState {
                     }
                     Err(e) => {
                         wallet_instance.error = Some(format!("Failed to get state: {}", e));
+                    }
+                }
+
+                match wallet.get_unspent_proofs().await {
+                    Ok(proofs) => {
+                        wallet_instance.mint_breakdowns = wallet.get_proof_breakdown(&proofs);
+                    }
+                    Err(e) => {
+                        wallet_instance.error = Some(format!("Failed to get proofs: {}", e));
                     }
                 }
             }
@@ -285,5 +301,126 @@ impl AppState {
 
     pub fn set_error(&mut self, message: String) {
         self.error_message = Some(message);
+    }
+
+    pub fn get_selected_mint_url(&self) -> Option<String> {
+        if let Some(wallet) = self.get_active_wallet() {
+            if self.selected_mint_index < wallet.config.mints.len() {
+                wallet.config.mints.get(self.selected_mint_index).cloned()
+            } else {
+                // If index is out of bounds, return first mint if available
+                wallet.config.mints.first().cloned()
+            }
+        } else {
+            None
+        }
+    }
+
+    pub async fn get_selected_mint_balance_info(&self) -> Option<(u64, String)> {
+        if let Some(wallet) = self.get_active_wallet() {
+            if let Some(ref nip60_wallet) = wallet.wallet {
+                if let Ok(proofs) = nip60_wallet.get_unspent_proofs().await {
+                    let breakdowns = nip60_wallet.get_proof_breakdown(&proofs);
+                    if let Some(selected_mint_url) = self.get_selected_mint_url() {
+                        for breakdown in breakdowns {
+                            if breakdown.mint_url == selected_mint_url {
+                                let unit = if let Some(mint_info) =
+                                    nip60_wallet.get_mint_info(&selected_mint_url)
+                                {
+                                    mint_info
+                                        .keysets
+                                        .first()
+                                        .map(|ks| ks.unit.clone())
+                                        .unwrap_or_else(|| "sats".to_string())
+                                } else {
+                                    "sats".to_string()
+                                };
+                                return Some((breakdown.total_balance, unit));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_display_balance_info(&self) -> (u64, String) {
+        if let Some(wallet) = self.get_active_wallet() {
+            if let Some(selected_mint_url) = self.get_selected_mint_url() {
+                // Find the selected mint in the cached breakdowns
+                for breakdown in &wallet.mint_breakdowns {
+                    if breakdown.mint_url == selected_mint_url {
+                        let unit = if let Some(ref nip60_wallet) = wallet.wallet {
+                            if let Some(mint_info) = nip60_wallet.get_mint_info(&selected_mint_url)
+                            {
+                                mint_info
+                                    .keysets
+                                    .first()
+                                    .map(|ks| ks.unit.clone())
+                                    .unwrap_or_else(|| "sats".to_string())
+                            } else {
+                                "sats".to_string()
+                            }
+                        } else {
+                            "sats".to_string()
+                        };
+                        return (breakdown.total_balance, unit);
+                    }
+                }
+                // If no breakdown found for selected mint, return 0 balance with estimated unit
+                let unit = if let Some(ref nip60_wallet) = wallet.wallet {
+                    if let Some(mint_info) = nip60_wallet.get_mint_info(&selected_mint_url) {
+                        mint_info
+                            .keysets
+                            .first()
+                            .map(|ks| ks.unit.clone())
+                            .unwrap_or_else(|| "sats".to_string())
+                    } else {
+                        "sats".to_string()
+                    }
+                } else {
+                    "sats".to_string()
+                };
+                return (0, unit);
+            } else {
+                // No mint selected - show total balance across all mints
+                let total_balance: u64 =
+                    wallet.mint_breakdowns.iter().map(|b| b.total_balance).sum();
+                return (total_balance.max(wallet.balance), "sats".to_string());
+            }
+        }
+        (0, "sats".to_string())
+    }
+
+    pub async fn refresh_mint_breakdowns(&mut self) -> Result<()> {
+        if let Some(active_wallet_config) = self.config.get_active_wallet() {
+            let wallet_name = active_wallet_config.name.clone();
+            if let Some(wallet_instance) = self.wallets.get_mut(&wallet_name) {
+                if let Some(ref wallet) = wallet_instance.wallet {
+                    match wallet.get_unspent_proofs().await {
+                        Ok(proofs) => {
+                            wallet_instance.mint_breakdowns = wallet.get_proof_breakdown(&proofs);
+                        }
+                        Err(e) => {
+                            wallet_instance.error = Some(format!("Failed to get proofs: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn ensure_mint_index_valid(&mut self) {
+        if let Some(wallet) = self.get_active_wallet() {
+            if wallet.config.mints.is_empty() {
+                self.selected_mint_index = 0;
+            } else if self.selected_mint_index >= wallet.config.mints.len() {
+                self.selected_mint_index = wallet.config.mints.len() - 1;
+            }
+        } else {
+            self.selected_mint_index = 0;
+        }
     }
 }

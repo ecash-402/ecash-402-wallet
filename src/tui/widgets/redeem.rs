@@ -29,9 +29,10 @@ impl RedeemWidget {
 
     fn render_header(f: &mut Frame, state: &AppState, area: Rect) {
         let title = if let Some(wallet) = state.get_active_wallet() {
+            let (balance, unit) = state.get_display_balance_info();
             format!(
-                "Redeem Token - {} (Balance: {} sats)",
-                wallet.config.name, wallet.balance
+                "Redeem Token - {} (Balance: {} {})",
+                wallet.config.name, balance, unit
             )
         } else {
             "Redeem Token - No wallet selected".to_string()

@@ -63,22 +63,29 @@ impl MainWidget {
             .split(area);
 
         if let Some(wallet) = state.get_active_wallet() {
-            let balance_text = format!("Balance: {} sats", format_amount(wallet.balance));
+            let (balance, unit) = state.get_display_balance_info();
+
+            let balance_text = format!("Balance: {} {}", format_amount(balance), unit);
             let balance_paragraph = Paragraph::new(balance_text)
                 .style(create_normal_style())
                 .alignment(Alignment::Center)
                 .block(
                     Block::default()
-                        .title("Wallet Balance")
+                        .title("Selected Mint Balance")
                         .borders(Borders::ALL),
                 );
 
             f.render_widget(balance_paragraph, chunks[0]);
 
+            let selected_mint_url = state
+                .get_selected_mint_url()
+                .unwrap_or_else(|| "No mint selected".to_string());
+
             let mut info_items = vec![
                 format!("Wallet: {}", wallet.config.name),
-                format!("Balance: {} sats", wallet.balance),
-                format!("Mints: {}", wallet.config.mints.len()),
+                format!("Selected Mint: {}", selected_mint_url),
+                format!("Balance: {} {}", balance, unit),
+                format!("Total Mints: {}", wallet.config.mints.len()),
                 format!("Relays: {}", wallet.config.relays.len()),
             ];
 
@@ -128,7 +135,7 @@ impl MainWidget {
                 .iter()
                 .enumerate()
                 .map(|(i, mint)| {
-                    let style = if i == state.selected_wallet_index {
+                    let style = if i == state.selected_mint_index {
                         create_selected_style()
                     } else {
                         create_normal_style()
@@ -139,7 +146,7 @@ impl MainWidget {
 
             let mint_list = List::new(mint_items).block(
                 Block::default()
-                    .title("Configured Mints")
+                    .title("Configured Mints (j/k to navigate)")
                     .borders(Borders::ALL),
             );
 
@@ -159,7 +166,7 @@ impl MainWidget {
             "h: History",
             "s: Send",
             "r: Redeem",
-            "l: Lightning",
+            "n: Lightning",
             "w: Wallets",
             "R: Refresh",
             "Tab: Switch Wallet",
@@ -176,8 +183,7 @@ impl MainWidget {
     }
 
     fn render_help(f: &mut Frame, area: Rect) {
-        let help_text =
-            "Press q or Ctrl+Q to quit • Use h/j/k/l for vim-style navigation • ESC to go back";
+        let help_text = "Press q or Ctrl+Q to quit • Use j/k to navigate mints, h/l for vim-style navigation • ESC to go back";
         let help_paragraph = Paragraph::new(help_text)
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);

@@ -267,6 +267,28 @@ impl Nip60Wallet {
         self.mint_infos.get(mint_url)
     }
 
+    pub fn get_mint_url_by_keyset_id(&self, keyset_id: &str) -> Option<String> {
+        for (mint_url, mint_info) in &self.mint_infos {
+            for keyset in &mint_info.keysets {
+                if keyset.id == keyset_id {
+                    return Some(mint_url.clone());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_mint_info_by_keyset_id(&self, keyset_id: &str) -> Option<MintInfo> {
+        for (_, mint_info) in &self.mint_infos {
+            for keyset in &mint_info.keysets {
+                if keyset.id == keyset_id {
+                    return Some(mint_info.clone());
+                }
+            }
+        }
+        None
+    }
+
     pub fn get_mint_keysets(&self, mint_url: &str) -> Vec<KeysetInfo> {
         self.mint_infos
             .get(mint_url)
@@ -1560,7 +1582,9 @@ impl Nip60Wallet {
             std::collections::HashMap::new();
 
         for proof in proofs {
-            let mint_url = proof.keyset_id.to_string();
+            let mint_url = self
+                .get_mint_url_by_keyset_id(&proof.keyset_id.to_string())
+                .unwrap_or(proof.keyset_id.to_string());
             let entry = breakdowns
                 .entry(mint_url.clone())
                 .or_insert_with(|| ProofBreakdown::new(mint_url));

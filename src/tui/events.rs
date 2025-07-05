@@ -18,16 +18,51 @@ impl EventHandler {
     }
 
     async fn handle_main_view(state: &mut AppState, key: KeyEvent) -> Result<()> {
+        // Ensure mint index is valid for the current wallet
+        state.ensure_mint_index_valid();
+
         match key.code {
             KeyCode::Char('h') => state.switch_view(ActiveView::History),
             KeyCode::Char('s') => state.switch_view(ActiveView::Send),
             KeyCode::Char('r') => state.switch_view(ActiveView::Redeem),
-            KeyCode::Char('l') => state.switch_view(ActiveView::Lightning),
+            KeyCode::Char('n') => state.switch_view(ActiveView::Lightning),
             KeyCode::Char('w') => state.switch_view(ActiveView::WalletManager),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(wallet) = state.get_active_wallet() {
+                    if !wallet.config.mints.is_empty() {
+                        state.selected_mint_index =
+                            (state.selected_mint_index + 1) % wallet.config.mints.len();
+                        // Refresh mint breakdowns to update balance display
+                        if let Err(e) = state.refresh_mint_breakdowns().await {
+                            state.set_error(format!("Failed to refresh mint data: {}", e));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(wallet) = state.get_active_wallet() {
+                    if !wallet.config.mints.is_empty() {
+                        state.selected_mint_index = if state.selected_mint_index == 0 {
+                            wallet.config.mints.len() - 1
+                        } else {
+                            state.selected_mint_index - 1
+                        };
+                        // Refresh mint breakdowns to update balance display
+                        if let Err(e) = state.refresh_mint_breakdowns().await {
+                            state.set_error(format!("Failed to refresh mint data: {}", e));
+                        }
+                    }
+                }
+            }
             KeyCode::Char('R') => {
                 state.loading = true;
                 if let Err(e) = state.refresh_all_wallets().await {
                     state.set_error(format!("Failed to refresh wallets: {}", e));
+                } else {
+                    // Also refresh mint breakdowns for the active wallet
+                    if let Err(e) = state.refresh_mint_breakdowns().await {
+                        state.set_error(format!("Failed to refresh mint data: {}", e));
+                    }
                 }
                 state.loading = false;
             }
@@ -35,6 +70,7 @@ impl EventHandler {
                 if !state.config.wallets.is_empty() {
                     state.selected_wallet_index =
                         (state.selected_wallet_index + 1) % state.config.wallets.len();
+                    state.selected_mint_index = 0; // Reset mint selection when switching wallets
                     if let Some(wallet_config) = state
                         .config
                         .wallets
@@ -44,6 +80,11 @@ impl EventHandler {
                         state.config.set_active_wallet(&wallet_config.name);
                         if let Err(e) = state.load_wallet(&wallet_config.name).await {
                             state.set_error(format!("Failed to load wallet: {}", e));
+                        } else {
+                            // Refresh mint breakdowns for the new wallet
+                            if let Err(e) = state.refresh_mint_breakdowns().await {
+                                state.set_error(format!("Failed to refresh mint data: {}", e));
+                            }
                         }
                     }
                 }
@@ -259,8 +300,14 @@ impl EventHandler {
                 if let Some(wallet_config) = state.config.wallets.get(state.selected_wallet_index) {
                     let wallet_name = wallet_config.name.clone();
                     state.config.set_active_wallet(&wallet_name);
+                    state.selected_mint_index = 0; // Reset mint selection when switching wallets
                     if let Err(e) = state.load_wallet(&wallet_name).await {
                         state.set_error(format!("Failed to load wallet: {}", e));
+                    } else {
+                        // Refresh mint breakdowns for the new wallet
+                        if let Err(e) = state.refresh_mint_breakdowns().await {
+                            state.set_error(format!("Failed to refresh mint data: {}", e));
+                        }
                     }
                     state.switch_view(ActiveView::Main);
                 }
@@ -339,6 +386,7 @@ impl EventHandler {
                             state: None,
                             balance: 0,
                             history: Vec::new(),
+                            mint_breakdowns: Vec::new(),
                             last_update: std::time::SystemTime::now(),
                             error: None,
                         },
