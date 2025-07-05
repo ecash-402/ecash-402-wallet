@@ -556,7 +556,7 @@ impl Nip60Wallet {
                     secret_str
                 };
 
-                let proof_id = format!("{}:{}", hex_secret, proof.c);
+                let proof_id = format!("{}", proof.c);
                 if proof_seen.contains(&proof_id) {
                     continue;
                 }
@@ -1312,7 +1312,7 @@ impl Nip60Wallet {
             selected_total += value;
             remaining -= value;
 
-            if let Some(event_id_str) = state.proof_to_event_id.get(&proof.keyset_id.to_string()) {
+            if let Some(event_id_str) = state.proof_to_event_id.get(&proof.c.to_string()) {
                 if let Ok(event_id) = EventId::from_hex(event_id_str) {
                     spent_event_ids.insert(event_id);
                 }

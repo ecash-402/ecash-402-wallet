@@ -1,6 +1,7 @@
 use cashu::CurrencyUnit;
 use clap::{Parser, Subcommand};
 use ecash_402_wallet::nip60::Nip60Wallet;
+use ecash_402_wallet::wallet_operations::WalletOperations;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -443,8 +444,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let balance = wallet.get_balance().await?;
-                println!("Balance: {} sats", balance);
+                let detailed_balance = WalletOperations::get_detailed_balance(&wallet).await?;
+
+                println!("=== Wallet Balance ===");
+                println!(
+                    "Total: {} sat ({} msat)",
+                    detailed_balance.total_sats, detailed_balance.total_msats
+                );
+                println!("\nBy Mint:");
+                for mint_balance in &detailed_balance.by_mint {
+                    println!("  • {}", mint_balance.mint_url);
+                    println!(
+                        "    Amount: {}",
+                        WalletOperations::display_amount_with_conversion(
+                            mint_balance.amount,
+                            &mint_balance.unit,
+                            true
+                        )
+                    );
+                    println!("    Proofs: {}", mint_balance.proof_count);
+                }
+
+                if detailed_balance.by_mint.is_empty() {
+                    println!("  No unspent proofs found");
+                }
             } else {
                 println!("No wallet found");
             }
@@ -487,10 +510,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let proofs = wallet.get_unspent_proofs().await?;
-                println!("Unspent proofs: {} proofs", proofs.len());
-                for (i, proof) in proofs.iter().enumerate() {
-                    println!("  Proof {}: {} sats", i + 1, proof.amount);
+                let detailed_balance = WalletOperations::get_detailed_balance(&wallet).await?;
+                println!("=== Unspent Proofs ===");
+                println!(
+                    "Total proofs: {}",
+                    detailed_balance
+                        .by_mint
+                        .iter()
+                        .map(|m| m.proof_count)
+                        .sum::<usize>()
+                );
+
+                for mint_balance in &detailed_balance.by_mint {
+                    println!("\n• {}", mint_balance.mint_url);
+                    println!("  Proofs: {}", mint_balance.proof_count);
+                    println!(
+                        "  Amount: {}",
+                        WalletOperations::display_amount_with_conversion(
+                            mint_balance.amount,
+                            &mint_balance.unit,
+                            true
+                        )
+                    );
                 }
             } else {
                 println!("No wallet found");
@@ -560,13 +601,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let stats = wallet.get_stats().await?;
-                println!("Balance: {} sats", stats.balance);
+                let stats = WalletOperations::get_detailed_stats(&wallet).await?;
+
+                println!("=== Wallet Statistics ===");
+                println!(
+                    "Total Balance: {} sat ({} msat)",
+                    stats.balance.total_sats, stats.balance.total_msats
+                );
                 println!("Token Events: {}", stats.token_events);
-                println!("\nMints:");
-                for mint in stats.mints {
-                    println!("  - URL: {}", mint);
-                    // println!("    Unit: {}", mint.unit);
+
+                println!("\n=== Mints ===");
+                for mint in &stats.mint_infos {
+                    println!("• {}", mint.url);
+                    println!("  Name: {}", mint.name.as_deref().unwrap_or("Unknown"));
+                    println!("  Unit: {}", mint.unit);
+                    println!("  Active: {}", mint.active);
+                    println!("  Keysets: {}", mint.keysets.len());
+                    for keyset in &mint.keysets {
+                        println!(
+                            "    - {} ({}) - Active: {}",
+                            keyset.id, keyset.unit, keyset.active
+                        );
+                    }
+                    println!();
+                }
+
+                println!("=== Balance by Mint ===");
+                for mint_balance in &stats.balance.by_mint {
+                    println!("• {}", mint_balance.mint_url);
+                    println!(
+                        "  Amount: {}",
+                        WalletOperations::display_amount_with_conversion(
+                            mint_balance.amount,
+                            &mint_balance.unit,
+                            true
+                        )
+                    );
+                    println!("  Proofs: {}", mint_balance.proof_count);
                 }
             } else {
                 println!("No wallet found");
@@ -579,18 +650,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let token_info = wallet.parse_cashu_token(&token)?;
-                println!("Token info:");
-                println!("  Amount: {} sats", token_info.proofs().len());
-                println!("  Mint: {}", token_info.mint_url()?.to_string());
+                let token_info = WalletOperations::analyze_token(&wallet, &token).await?;
+                println!("=== Token Analysis ===");
+                println!("Mint: {}", token_info.mint_url);
+                println!("Unit: {}", token_info.unit);
                 println!(
-                    "  Memo: {}",
-                    token_info
-                        .memo()
-                        .as_ref()
-                        .map(String::as_str)
-                        .unwrap_or("None")
+                    "Amount: {}",
+                    WalletOperations::display_amount_with_conversion(
+                        token_info.amount,
+                        &token_info.unit,
+                        true
+                    )
                 );
+                println!("Proofs: {}", token_info.proof_count);
+                println!("Memo: {}", token_info.memo.as_deref().unwrap_or("None"));
             } else {
                 println!("No wallet found");
             }
@@ -602,9 +675,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let parsed_token = wallet.parse_cashu_token(&token)?;
-                let amount = wallet.calculate_token_amount(&parsed_token)?;
-                println!("Token amount: {} sats", amount);
+                let token_info = WalletOperations::analyze_token(&wallet, &token).await?;
+                println!("=== Token Amount ===");
+                println!("Mint: {}", token_info.mint_url);
+                println!(
+                    "Amount: {}",
+                    WalletOperations::display_amount_with_conversion(
+                        token_info.amount,
+                        &token_info.unit,
+                        true
+                    )
+                );
             } else {
                 println!("No wallet found");
             }
@@ -692,8 +773,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let token = wallet.send(amount, memo.map(String::from)).await?;
-                println!("Token created successfully: {}", token);
+                println!("=== Creating Token ===");
+                println!("Amount: {} sat", amount);
+                if let Some(memo_text) = &memo {
+                    println!("Memo: {}", memo_text);
+                }
+
+                match wallet.send(amount, memo.map(String::from)).await {
+                    Ok(token) => {
+                        println!("✅ Token created successfully!");
+                        println!("Token: {}", token);
+
+                        // Analyze the created token
+                        if let Ok(token_info) =
+                            WalletOperations::analyze_token(&wallet, &token).await
+                        {
+                            println!("\n=== Token Details ===");
+                            println!("Mint: {}", token_info.mint_url);
+                            println!(
+                                "Amount: {}",
+                                WalletOperations::display_amount_with_conversion(
+                                    token_info.amount,
+                                    &token_info.unit,
+                                    true
+                                )
+                            );
+                            println!("Proofs: {}", token_info.proof_count);
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to create token: {}", e);
+                    }
+                }
             } else {
                 println!("No wallet found");
             }
@@ -728,8 +839,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                wallet.redeem(&token).await?;
-                println!("Token redeemed successfully");
+                let token_info = WalletOperations::analyze_token(&wallet, &token).await?;
+
+                println!("=== Redeeming Token ===");
+                println!("Mint: {}", token_info.mint_url);
+                println!(
+                    "Amount: {}",
+                    WalletOperations::display_amount_with_conversion(
+                        token_info.amount,
+                        &token_info.unit,
+                        true
+                    )
+                );
+                println!("Proofs: {}", token_info.proof_count);
+
+                match wallet.redeem(&token).await {
+                    Ok(_) => {
+                        println!(
+                            "✅ Successfully redeemed {}",
+                            WalletOperations::display_amount_with_conversion(
+                                token_info.amount,
+                                &token_info.unit,
+                                true
+                            )
+                        );
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to redeem token: {}", e);
+                    }
+                }
             } else {
                 println!("No wallet found");
             }
@@ -919,27 +1057,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let history = wallet.get_event_history_by_mint(mint).await?;
-                for mint_history in history {
-                    println!("\nMint: {}", mint_history.mint);
-                    // println!("Unit: {}", mint_history.mint.unit);
-                    println!("Total Received: {} sats", mint_history.total_received);
-                    println!("Total Spent: {} sats", mint_history.total_spent);
-                    println!(
-                        "Net Balance: {} sats",
-                        mint_history.total_received - mint_history.total_spent
-                    );
-                    println!("\nEvents:");
-                    for event in mint_history.events {
-                        println!("  - Direction: {}", event.direction);
-                        println!("    Amount: {} sats", event.amount);
-                        println!("    Timestamp: {}", event.timestamp);
-                        println!("    Event ID: {}", event.event_id);
-                        if let Some(memo) = event.memo {
-                            println!("    Memo: {}", memo);
-                        }
-                        println!();
+                let transactions = WalletOperations::get_formatted_history(&wallet, mint).await?;
+
+                println!("=== Transaction History ===");
+
+                // Group by mint for summary
+                let mut mint_summaries: std::collections::HashMap<String, (u64, u64, String)> =
+                    std::collections::HashMap::new();
+                for tx in &transactions {
+                    let entry = mint_summaries.entry(tx.mint_url.clone()).or_insert((
+                        0,
+                        0,
+                        tx.unit.clone(),
+                    ));
+                    match tx.direction.as_str() {
+                        "in" => entry.0 += tx.amount,
+                        "out" => entry.1 += tx.amount,
+                        _ => {}
                     }
+                }
+
+                println!("\n=== Summary by Mint ===");
+                for (mint_url, (total_in, total_out, unit)) in &mint_summaries {
+                    println!("• {}", mint_url);
+                    println!(
+                        "  Total In: {}",
+                        WalletOperations::display_amount_with_conversion(*total_in, unit, true)
+                    );
+                    println!(
+                        "  Total Out: {}",
+                        WalletOperations::display_amount_with_conversion(*total_out, unit, true)
+                    );
+                    println!(
+                        "  Net: {}",
+                        WalletOperations::display_amount_with_conversion(
+                            if *total_in > *total_out {
+                                *total_in - *total_out
+                            } else {
+                                *total_out - *total_in
+                            },
+                            unit,
+                            true
+                        )
+                    );
+                    println!();
+                }
+
+                println!("=== Detailed Transactions ===");
+                for (i, tx) in transactions.iter().enumerate() {
+                    println!(
+                        "{}. {} - {}",
+                        i + 1,
+                        tx.direction.to_uppercase(),
+                        tx.mint_url
+                    );
+                    println!(
+                        "   Amount: {}",
+                        WalletOperations::display_amount_with_conversion(tx.amount, &tx.unit, true)
+                    );
+                    if let Some(timestamp) = tx.timestamp {
+                        println!("   Time: {}", timestamp);
+                    }
+                    if let Some(memo) = &tx.memo {
+                        println!("   Memo: {}", memo);
+                    }
+                    println!();
+                }
+
+                if transactions.is_empty() {
+                    println!("No transactions found");
                 }
             } else {
                 println!("No wallet found");
@@ -965,41 +1151,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
+                let mint_infos = WalletOperations::get_mint_info_display(&wallet);
+
                 if let Some(mint_url) = mint {
-                    if let Some(mint_info) = wallet.get_mint_info(&mint_url) {
-                        println!("\nMint Information for: {}", mint_url);
-                        println!("=================================");
+                    if let Some(mint_info) = mint_infos.iter().find(|m| m.url == mint_url) {
+                        println!("=== Mint Information ===");
+                        println!("URL: {}", mint_info.url);
                         println!("Name: {}", mint_info.name.as_deref().unwrap_or("Unknown"));
                         println!(
                             "Description: {}",
                             mint_info.description.as_deref().unwrap_or("No description")
                         );
+                        println!("Primary Unit: {}", mint_info.unit);
                         println!("Active: {}", mint_info.active);
-                        println!("\nKeysets:");
+                        println!("\n=== Keysets ===");
                         for keyset in &mint_info.keysets {
-                            println!("  - ID: {}", keyset.id);
-                            println!("    Unit: {}", keyset.unit);
-                            println!("    Active: {}", keyset.active);
+                            println!("• ID: {}", keyset.id);
+                            println!("  Unit: {}", keyset.unit);
+                            println!("  Active: {}", keyset.active);
                             println!();
                         }
                     } else {
                         println!("Mint not found: {}", mint_url);
                     }
                 } else {
-                    println!("\nAll Mint Information:");
-                    println!("=====================");
-                    for mint_info in wallet.get_all_mint_infos() {
-                        println!("\nMint: {}", mint_info.url);
-                        println!("Name: {}", mint_info.name.as_deref().unwrap_or("Unknown"));
+                    println!("=== All Mint Information ===");
+                    for mint_info in &mint_infos {
+                        println!("\n• {}", mint_info.url);
+                        println!("  Name: {}", mint_info.name.as_deref().unwrap_or("Unknown"));
                         println!(
-                            "Description: {}",
+                            "  Description: {}",
                             mint_info.description.as_deref().unwrap_or("No description")
                         );
-                        println!("Active: {}", mint_info.active);
-                        println!("Keysets: {}", mint_info.keysets.len());
+                        println!("  Primary Unit: {}", mint_info.unit);
+                        println!("  Active: {}", mint_info.active);
+                        println!("  Keysets: {}", mint_info.keysets.len());
                         for keyset in &mint_info.keysets {
                             println!(
-                                "  - {} ({}) - Active: {}",
+                                "    - {} ({}) - Active: {}",
                                 keyset.id, keyset.unit, keyset.active
                             );
                         }
