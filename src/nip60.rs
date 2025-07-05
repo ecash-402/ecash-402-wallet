@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::mint::{KeysetInfo, MintClient};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::nuts::Proofs;
+use cdk::nuts::{Proof, Proofs};
 
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -11,9 +11,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::error::Error;
+use ::hex;
 use base64::{Engine as _, engine::general_purpose::STANDARD as base64};
 use cdk::nuts::nut00::Token;
-use hex;
 
 pub mod kinds {
     use nostr_sdk::Kind;
@@ -1172,16 +1172,58 @@ impl Nip60Wallet {
             .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
             .to_string();
         let input_proofs = parsed_token.proofs();
-        let _total_input_amount = self.calculate_token_amount(&parsed_token)?;
+        let total_input_amount = self.calculate_token_amount(&parsed_token)?;
 
-        let is_trusted_mint = self.mints.iter().any(|m| m.clone() == mint_url);
+        let _is_trusted_mint = self.mints.iter().any(|m| m.clone() == mint_url);
 
-        let final_proofs = if is_trusted_mint {
-            self.optimize_proof_denominations(input_proofs, &mint_url)
-                .await?
-        } else {
-            input_proofs
-        };
+        // Validate proofs at the mint if it's trusted
+        // let valid_input_proofs = if is_trusted_mint {
+        //     let mint_client = MintClient::new(&mint_url)?;
+        //     match mint_client.validate_proofs(&input_proofs).await {
+        //         Ok(valid_proofs) if valid_proofs.len() == input_proofs.len() => valid_proofs,
+        //         _ => {
+        //             return Err(crate::error::Error::custom(
+        //                 "Some proofs are already spent at the mint",
+        //             ));
+        //         }
+        //     }
+        // } else {
+        //     input_proofs
+        // };
+
+        // Get the active keyset for this mint
+        let active_keysets = self.get_active_keysets(&mint_url);
+        if active_keysets.is_empty() {
+            return Err(crate::error::Error::custom(
+                "No active keysets found for mint",
+            ));
+        }
+        let keyset_id = &active_keysets[0].id;
+
+        // Create blinded messages for the same amount using crypto module
+        let blinded_messages =
+            crate::crypto::create_blinded_messages_for_amount(total_input_amount, keyset_id)?;
+
+        // Use swap_tokens to exchange old proofs for new signatures
+        let mint_client = MintClient::new(&mint_url)?;
+        let swap_response = mint_client
+            .swap_tokens(input_proofs, blinded_messages)
+            .await?;
+
+        // Create new proofs from the signatures
+        let mut final_proofs = Vec::new();
+        for signature in &swap_response.signatures {
+            let secret = crate::crypto::generate_random_secret();
+            let proof = Proof {
+                amount: signature.amount,
+                keyset_id: signature.keyset_id.clone(),
+                secret: cdk::secret::Secret::new(secret),
+                c: signature.c,
+                witness: None,
+                dleq: None,
+            };
+            final_proofs.push(proof);
+        }
 
         let final_amount = final_proofs
             .iter()
@@ -1232,10 +1274,8 @@ impl Nip60Wallet {
         let mut sorted_proofs = available_proofs.clone();
         sorted_proofs.sort_by(|a, b| b.amount.cmp(&a.amount)); // largest → smallest
 
-        println!("{:?}", state.proof_to_event_id);
         let mut remaining = amount;
         for proof in &sorted_proofs {
-            println!("{:?}", proof);
             if remaining == 0 {
                 break;
             }
@@ -1272,7 +1312,6 @@ impl Nip60Wallet {
 
         if selected_total == amount {
             let spent_event_ids: Vec<EventId> = spent_event_ids.into_iter().collect();
-            println!("{:?}", spent_event_ids);
             return Ok((selected_proofs.clone(), selected_proofs, spent_event_ids));
         }
 

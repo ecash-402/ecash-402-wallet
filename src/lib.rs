@@ -4,3 +4,4 @@ pub mod wallet;
 
 pub mod nip60;
 pub mod mint;
+pub mod crypto;
