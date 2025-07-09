@@ -65,7 +65,7 @@ pub struct SpendingHistory {
     pub created_at: Option<u64>, // Unix timestamp when this spending event was created
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TokenEvent {
     pub id: EventId,
     pub data: TokenData,
@@ -102,13 +102,15 @@ pub struct ProofBreakdown {
     pub mint_url: String,
     pub total_balance: u64,
     pub proof_count: usize,
+    pub unit: Option<String>,
     pub denominations: std::collections::HashMap<u64, u32>,
 }
 
 impl ProofBreakdown {
-    pub fn new(mint_url: String) -> Self {
+    pub fn new(mint_url: String, unit: Option<String>) -> Self {
         Self {
             mint_url,
+            unit,
             total_balance: 0,
             proof_count: 0,
             denominations: std::collections::HashMap::new(),
@@ -134,9 +136,10 @@ impl ProofBreakdown {
 
     pub fn to_string(&self) -> String {
         format!(
-            "{}: {} sats ({} proofs: {})",
+            "{}: {} {} ({} proofs: {})",
             self.mint_url,
             self.total_balance,
+            self.unit.clone().unwrap_or("sats".to_string()),
             self.proof_count,
             self.format_denominations()
         )
@@ -656,6 +659,7 @@ impl Nip60Wallet {
 
     pub async fn get_unspent_proofs(&self) -> Result<Proofs> {
         let state = self.fetch_wallet_state().await?;
+        println!("{:?}", state);
         Ok(state.proofs)
     }
 
@@ -706,7 +710,7 @@ impl Nip60Wallet {
         let mut events_map: HashMap<String, (Proofs, String)> = HashMap::new();
 
         for proof in state.proofs {
-            if let Some(event_id) = state.proof_to_event_id.get(&proof.keyset_id.to_string()) {
+            if let Some(event_id) = state.proof_to_event_id.get(&proof.c.to_string()) {
                 events_map
                     .entry(event_id.clone())
                     .or_insert_with(|| (Vec::new(), String::new()))
@@ -1582,12 +1586,15 @@ impl Nip60Wallet {
             std::collections::HashMap::new();
 
         for proof in proofs {
-            let mint_url = self
-                .get_mint_url_by_keyset_id(&proof.keyset_id.to_string())
-                .unwrap_or(proof.keyset_id.to_string());
-            let entry = breakdowns
-                .entry(mint_url.clone())
-                .or_insert_with(|| ProofBreakdown::new(mint_url));
+            let mint_info = self
+                .get_mint_info_by_keyset_id(&proof.keyset_id.to_string())
+                .unwrap();
+            let entry = breakdowns.entry(mint_info.url.clone()).or_insert_with(|| {
+                ProofBreakdown::new(
+                    mint_info.url,
+                    Some(mint_info.keysets.first().unwrap().unit.clone()),
+                )
+            });
 
             entry.add_proof(proof.amount.into());
         }
@@ -1598,6 +1605,7 @@ impl Nip60Wallet {
     }
 
     pub async fn get_proof_breakdown_string(&self) -> Result<String> {
+        println!("{:?}", self.token_events().await.unwrap());
         let proofs = self.get_unspent_proofs().await?;
         let breakdowns = self.get_proof_breakdown(&proofs);
 
@@ -1612,5 +1620,47 @@ impl Nip60Wallet {
         }
 
         Ok(output)
+    }
+
+    pub async fn token_events(&self) -> Result<Vec<TokenEvent>> {
+        let signer = self
+            .client
+            .signer()
+            .await
+            .map_err(|e| Error::custom(&format!("Failed to get signer: {}", e)))?;
+
+        let public_key = signer
+            .get_public_key()
+            .await
+            .map_err(|e| Error::custom(&format!("Failed to get public key: {}", e)))?;
+
+        let filter = Filter::new().author(public_key).kinds(vec![kinds::TOKEN]);
+
+        let events = self
+            .client
+            .fetch_events(filter, Duration::from_secs(10))
+            .await
+            .map_err(|e| Error::custom(&format!("Failed to fetch events: {}", e)))?;
+
+        let mut wallet_events: Vec<_> = events.iter().filter(|e| e.kind == kinds::TOKEN).collect();
+        wallet_events.sort_by_key(|e| e.created_at);
+
+        if let Some(wallet_event) = wallet_events.last() {
+            if let Ok(decrypted) = signer
+                .nip44_decrypt(&public_key, &wallet_event.content)
+                .await
+            {
+                println!("{:?}", decrypted);
+                if let Ok(wallet_data) = serde_json::from_str::<Vec<TokenEvent>>(&decrypted) {
+                    return Ok(wallet_data);
+                } else {
+                    return Err(Error::NotEnoughBalance("test".to_string()));
+                }
+            } else {
+                return Err(Error::NotEnoughBalance("test".to_string()));
+            }
+        } else {
+            return Err(Error::NotEnoughBalance("test".to_string()));
+        }
     }
 }

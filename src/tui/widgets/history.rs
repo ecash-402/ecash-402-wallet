@@ -1,3 +1,5 @@
+use std::mem::transmute;
+
 use crate::tui::state::{AppState, HistoryFilter};
 use crate::tui::widgets::{
     create_normal_style, create_selected_style, create_title_style, format_amount,
@@ -147,8 +149,8 @@ impl HistoryWidget {
 
                 let transaction_lines = vec![
                     format!(
-                        "{}{} | {} sats | {}",
-                        direction_symbol, direction_text, amount_str, created_date
+                        "{}{} | {} {} | {}",
+                        direction_symbol, direction_text, amount_str, event_info.unit, created_date
                     ),
                     format!(
                         "  Event: {} | Mint: {} | Unit: {}",
@@ -187,41 +189,25 @@ impl HistoryWidget {
             }
         }
 
-        // Extract mint and unit information using wallet state and token events
+        println!("{:?}", transaction);
+
         if let Some(active_wallet) = state.get_active_wallet() {
             if let Some(wallet_state) = &active_wallet.state {
                 if let Some(nip60_wallet) = &active_wallet.wallet {
-                    // Try to determine mint and unit from token proofs
                     if !wallet_state.proofs.is_empty() {
-                        // Get mint from the first proof's keyset info
-                        if let Some(first_proof) = wallet_state.proofs.first() {
-                            let keyset_id = &first_proof.keyset_id.to_string();
+                        let p = nip60_wallet.get_proof_breakdown(&wallet_state.proofs);
+                        let b = p.first().unwrap();
+                        mint = b.mint_url.clone();
+                        unit = b.unit.clone().unwrap_or("sat".to_string());
 
-                            // Look through all mint infos to find matching keyset
-                            for mint_info in nip60_wallet.get_all_mint_infos() {
-                                for keyset in &mint_info.keysets {
-                                    if keyset.id == *keyset_id {
-                                        mint = mint_info.url.clone();
-                                        unit = keyset.unit.clone();
-                                        break;
-                                    }
-                                }
-                                if mint != "Unknown" {
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                        // if let Some(first_proof) = wallet_state.proofs.first() {
+                        //     let keyset_id = &first_proof.keyset_id.to_string();
+                        //     let mint_info =
+                        //         nip60_wallet.get_mint_info_by_keyset_id(&keyset_id).unwrap();
 
-                    // If we still don't have mint info, try to get it from the configured mints
-                    if mint == "Unknown" {
-                        let all_mint_infos = nip60_wallet.get_all_mint_infos();
-                        if let Some(first_mint) = all_mint_infos.first() {
-                            mint = first_mint.url.clone();
-                            if let Some(first_keyset) = first_mint.keysets.first() {
-                                unit = first_keyset.unit.clone();
-                            }
-                        }
+                        //     mint = mint_info.url.clone();
+                        //     unit = mint_info.keysets.first().unwrap().unit.clone();
+                        // }
                     }
                 }
             }
