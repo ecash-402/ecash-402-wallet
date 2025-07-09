@@ -1,6 +1,6 @@
 use crate::tui::state::AppState;
 use crate::tui::widgets::{
-    create_normal_style, create_selected_style, create_title_style, format_amount, format_timestamp,
+    create_normal_style, create_selected_style, create_title_style, format_timestamp,
 };
 use ratatui::{
     prelude::*,

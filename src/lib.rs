@@ -1,5 +1,6 @@
 pub mod error;
 pub mod models;
+pub mod multimint;
 pub mod wallet;
 
 pub mod crypto;

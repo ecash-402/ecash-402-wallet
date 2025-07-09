@@ -1,5 +1,3 @@
-use std::mem::transmute;
-
 use crate::tui::state::{AppState, HistoryFilter};
 use crate::tui::widgets::{
     create_normal_style, create_selected_style, create_title_style, format_amount,

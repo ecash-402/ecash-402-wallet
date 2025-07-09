@@ -1,6 +1,7 @@
 use crate::{
     error::{Error, Result},
     models::SendTokenPendingResponse,
+    multimint::MultimintWallet,
 };
 use std::{str::FromStr, sync::Arc};
 
@@ -65,13 +66,11 @@ impl CashuWalletClient {
 
         Ok(proofs
             .into_iter()
-            .map(|proof| {
-                SendTokenPendingResponse {
-                    token: proof.secret.to_string(),
-                    amount: proof.amount.to_string(), // Assuming Amount is a wrapper around u64
-                    key: proof.c.to_string(),
-                    key_id: proof.keyset_id.to_string(),
-                }
+            .map(|proof| SendTokenPendingResponse {
+                token: proof.secret.to_string(),
+                amount: proof.amount.to_string(),
+                key: proof.c.to_string(),
+                key_id: proof.keyset_id.to_string(),
             })
             .collect())
     }
@@ -84,7 +83,16 @@ impl CashuWalletClient {
     ) -> Result<Self> {
         let home_dir =
             home::home_dir().ok_or_else(|| Error::custom("Could not determine home directory"))?;
-        let localstore = WalletRedbDatabase::new(&home_dir.join(db_name)).unwrap();
+        let db_path = home_dir.join(db_name);
+
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::custom(&format!("Failed to create database directory: {}", e))
+            })?;
+        }
+
+        let localstore = WalletRedbDatabase::new(&db_path)
+            .map_err(|e| Error::custom(&format!("Failed to create database: {}", e)))?;
 
         let seed = s.to_seed_normalized("");
         let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)
@@ -108,5 +116,21 @@ impl CashuWalletClient {
             .receive_proofs(proofs, ReceiveOptions::default(), None)
             .await?;
         Ok(())
+    }
+
+    pub async fn to_multimint_wallet(
+        &self,
+        mint_url: &str,
+        seed: &str,
+        base_db_path: &str,
+    ) -> Result<MultimintWallet> {
+        MultimintWallet::from_existing_wallet(self, mint_url, seed, base_db_path).await
+    }
+
+    pub async fn create_multimint_wallet(
+        seed: &str,
+        base_db_path: &str,
+    ) -> Result<MultimintWallet> {
+        MultimintWallet::new(seed, base_db_path).await
     }
 }
