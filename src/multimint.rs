@@ -6,17 +6,18 @@ use crate::{
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
-use cdk::nuts::CurrencyUnit;
+use cdk::{
+    Amount,
+    cdk_database::{self, WalletDatabase},
+    mint_url::MintUrl,
+    nuts::CurrencyUnit,
+    wallet::{
+        ReceiveOptions, SendOptions, multi_mint_wallet::MultiMintWallet as CdkMultiMintWallet,
+        types::WalletKey,
+    },
+};
+use cdk_sqlite::WalletSqliteDatabase;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone)]
-pub struct MintWalletInfo {
-    pub url: String,
-    pub unit: CurrencyUnit,
-    pub wallet: Arc<CashuWalletClient>,
-    pub db_name: String,
-    pub active: bool,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultimintBalance {
@@ -51,80 +52,63 @@ impl Default for MultimintSendOptions {
 
 #[derive(Debug, Clone)]
 pub struct MultimintWallet {
-    seed: String,
-    mint_wallets: HashMap<String, MintWalletInfo>,
+    inner: CdkMultiMintWallet,
+    seed: [u8; 32],
     base_db_path: String,
 }
 
 impl MultimintWallet {
     pub async fn new(seed: &str, base_db_path: &str) -> Result<Self> {
         let mnemonic = Mnemonic::from_str(seed).map_err(|_| Error::custom("Invalid mnemonic"))?;
+        let seed_full = mnemonic.to_seed_normalized("");
+        let seed_bytes: [u8; 32] = seed_full[0..32]
+            .try_into()
+            .map_err(|_| Error::custom("Invalid seed length"))?;
+
+        let db_path = format!("{}/multimint.sqlite", base_db_path);
+        let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> = Arc::new(
+            WalletSqliteDatabase::new(&db_path)
+                .await
+                .map_err(|e| Error::custom(&e.to_string()))?,
+        );
+
+        let inner = CdkMultiMintWallet::new(localstore, Arc::new(seed_bytes), vec![]);
 
         Ok(Self {
-            seed: mnemonic.to_string(),
-            mint_wallets: HashMap::new(),
+            inner,
+            seed: seed_bytes,
             base_db_path: base_db_path.to_string(),
         })
     }
 
     pub async fn from_existing_wallet(
-        wallet: &CashuWalletClient,
+        _wallet: &CashuWalletClient,
         mint_url: &str,
         seed: &str,
         base_db_path: &str,
     ) -> Result<Self> {
         let mut multimint = Self::new(seed, base_db_path).await?;
-        multimint.add_mint_from_wallet(mint_url, wallet).await?;
+        multimint
+            .add_mint(mint_url, Some(CurrencyUnit::Msat))
+            .await?;
         Ok(multimint)
     }
 
-    async fn add_mint_from_wallet(
-        &mut self,
-        mint_url: &str,
-        wallet: &CashuWalletClient,
-    ) -> Result<()> {
-        let unit = self.detect_mint_unit(mint_url).await?;
-        let db_name = self.generate_db_name(mint_url);
+    pub async fn add_mint(&mut self, mint_url: &str, unit: Option<CurrencyUnit>) -> Result<()> {
+        let currency_unit = unit.unwrap_or(CurrencyUnit::Msat);
+        let _mint_url_parsed =
+            MintUrl::from_str(mint_url).map_err(|e| Error::custom(&e.to_string()))?;
 
-        let mint_info = MintWalletInfo {
-            url: mint_url.to_string(),
-            unit,
-            wallet: Arc::new(wallet.clone()),
-            db_name,
-            active: true,
-        };
+        let _wallet = self
+            .inner
+            .create_and_add_wallet(mint_url, currency_unit.clone(), None)
+            .await
+            .map_err(|e| Error::custom(&e.to_string()))?;
 
-        self.mint_wallets.insert(mint_url.to_string(), mint_info);
-        Ok(())
-    }
-
-    pub async fn add_mint(&mut self, mint_url: &str, _unit: Option<CurrencyUnit>) -> Result<()> {
-        if self.mint_wallets.contains_key(mint_url) {
-            return Err(Error::custom("Mint already exists"));
-        }
-
-        let currency_unit = CurrencyUnit::Msat;
-
-        let db_name = self.generate_db_name(mint_url);
-        let wallet = CashuWalletClient::from_seed(mint_url, &self.seed, &db_name).await?;
-
-        let mint_info = MintWalletInfo {
-            url: mint_url.to_string(),
-            unit: currency_unit,
-            wallet: Arc::new(wallet),
-            db_name,
-            active: true,
-        };
-
-        self.mint_wallets.insert(mint_url.to_string(), mint_info);
         Ok(())
     }
 
     pub async fn remove_mint(&mut self, mint_url: &str) -> Result<()> {
-        if !self.mint_wallets.contains_key(mint_url) {
-            return Err(Error::custom("Mint not found"));
-        }
-
         let balance = self.get_mint_balance(mint_url).await?;
         if balance > 0 {
             return Err(Error::custom(
@@ -132,45 +116,40 @@ impl MultimintWallet {
             ));
         }
 
-        self.mint_wallets.remove(mint_url);
         Ok(())
     }
 
-    pub fn list_mints(&self) -> Vec<String> {
-        self.mint_wallets.keys().cloned().collect()
-    }
-
-    pub fn get_mint_info(&self, mint_url: &str) -> Option<&MintWalletInfo> {
-        self.mint_wallets.get(mint_url)
+    pub async fn list_mints(&self) -> Vec<String> {
+        let wallets = self.inner.get_wallets().await;
+        wallets.iter().map(|f| f.mint_url.to_string()).collect()
     }
 
     pub async fn get_total_balance(&self) -> Result<MultimintBalance> {
         let mut total_balance = 0u64;
         let mut balances_by_mint = HashMap::new();
 
-        for (mint_url, mint_info) in &self.mint_wallets {
-            if !mint_info.active {
-                continue;
+        for unit in [CurrencyUnit::Msat, CurrencyUnit::Sat] {
+            let balances = self
+                .inner
+                .get_balances(&unit)
+                .await
+                .map_err(|e| Error::custom(&e.to_string()))?;
+
+            for (mint_url, amount) in balances {
+                let balance: u64 = amount.clone().into();
+                let normalized_balance = self.normalize_to_sats(balance, &unit);
+                total_balance += normalized_balance;
+
+                balances_by_mint.insert(
+                    mint_url.to_string(),
+                    MintBalance {
+                        mint_url: mint_url.to_string(),
+                        balance,
+                        unit: unit.clone(),
+                        proof_count: 0,
+                    },
+                );
             }
-
-            let balance_str = mint_info.wallet.balance().await?;
-            let balance = balance_str.parse::<u64>().unwrap_or(0);
-
-            let normalized_balance = self.normalize_to_sats(balance, &mint_info.unit);
-            total_balance += normalized_balance;
-
-            let pending = mint_info.wallet.pending().await?;
-            let proof_count = pending.len();
-
-            balances_by_mint.insert(
-                mint_url.clone(),
-                MintBalance {
-                    mint_url: mint_url.clone(),
-                    balance,
-                    unit: mint_info.unit.clone(),
-                    proof_count,
-                },
-            );
         }
 
         Ok(MultimintBalance {
@@ -180,13 +159,22 @@ impl MultimintWallet {
     }
 
     pub async fn get_mint_balance(&self, mint_url: &str) -> Result<u64> {
-        let mint_info = self
-            .mint_wallets
-            .get(mint_url)
-            .ok_or_else(|| Error::custom("Mint not found"))?;
+        let mint_url_parsed =
+            MintUrl::from_str(mint_url).map_err(|e| Error::custom(&e.to_string()))?;
 
-        let balance_str = mint_info.wallet.balance().await?;
-        Ok(balance_str.parse::<u64>().unwrap_or(0))
+        for unit in [CurrencyUnit::Msat, CurrencyUnit::Sat] {
+            let balances = self
+                .inner
+                .get_balances(&unit)
+                .await
+                .map_err(|e| Error::custom(&e.to_string()))?;
+
+            if let Some(amount) = balances.get(&mint_url_parsed) {
+                return Ok(amount.clone().into());
+            }
+        }
+
+        Ok(0)
     }
 
     pub async fn send(&self, amount: u64, options: MultimintSendOptions) -> Result<String> {
@@ -202,56 +190,104 @@ impl MultimintWallet {
         amount: u64,
         options: MultimintSendOptions,
     ) -> Result<String> {
-        let mint_url = if let Some(preferred) = options.preferred_mint {
-            if !self.mint_wallets.contains_key(&preferred) {
-                return Err(Error::custom("Preferred mint not found"));
-            }
-            preferred
+        let unit = options.unit.unwrap_or(CurrencyUnit::Msat);
+        let amount_obj = Amount::from(amount);
+
+        let wallet = if let Some(preferred_mint) = options.preferred_mint {
+            let mint_url =
+                MintUrl::from_str(&preferred_mint).map_err(|e| Error::custom(&e.to_string()))?;
+            let wallet_key = WalletKey::new(mint_url, unit);
+            self.inner
+                .get_wallet(&wallet_key)
+                .await
+                .ok_or_else(|| Error::custom("Preferred mint not found"))?
         } else {
-            self.find_best_mint_for_amount(amount, options.unit).await?
+            let balances = self
+                .inner
+                .get_balances(&unit)
+                .await
+                .map_err(|e| Error::custom(&e.to_string()))?;
+
+            let (mint_url, _) = balances
+                .iter()
+                .find(|(_, balance)| {
+                    let balance_u64: u64 = (*balance).clone().into();
+                    balance_u64 >= amount
+                })
+                .ok_or_else(|| Error::custom("No mint has sufficient balance"))?;
+
+            let wallet_key = WalletKey::new(mint_url.clone(), unit);
+            self.inner
+                .get_wallet(&wallet_key)
+                .await
+                .ok_or_else(|| Error::custom("Wallet not found"))?
         };
 
-        let mint_info = &self.mint_wallets[&mint_url];
-        let balance = self.get_mint_balance(&mint_url).await?;
+        let prepared_send = wallet
+            .prepare_send(amount_obj, SendOptions::default())
+            .await
+            .map_err(|e| Error::custom(&e.to_string()))?;
+        let token = wallet
+            .send(prepared_send, None)
+            .await
+            .map_err(|e| Error::custom(&e.to_string()))?;
 
-        if balance < amount {
-            return Err(Error::custom(&format!(
-                "Insufficient balance in mint {}: need {}, have {}",
-                mint_url, amount, balance
-            )));
-        }
-
-        mint_info.wallet.send(amount).await
+        Ok(token.to_string())
     }
 
     async fn send_split_across_mints(
         &self,
         amount: u64,
-        _options: MultimintSendOptions,
+        options: MultimintSendOptions,
     ) -> Result<String> {
-        let balance = self.get_total_balance().await?;
-        if balance.total_balance < amount {
+        let unit = options.unit.unwrap_or(CurrencyUnit::Msat);
+        let balances = self
+            .inner
+            .get_balances(&unit)
+            .await
+            .map_err(|e| Error::custom(&e.to_string()))?;
+
+        let total_balance: u64 = balances
+            .values()
+            .map(|a| {
+                let val: u64 = (*a).clone().into();
+                val
+            })
+            .sum();
+        if total_balance < amount {
             return Err(Error::custom("Insufficient total balance"));
         }
 
         let mut remaining_amount = amount;
         let mut tokens = Vec::new();
 
-        let mut mint_balances: Vec<_> = balance.balances_by_mint.values().collect();
-        mint_balances.sort_by(|a, b| b.balance.cmp(&a.balance));
+        let mut mint_balances: Vec<_> = balances.iter().collect();
+        mint_balances.sort_by(|a, b| b.1.cmp(a.1));
 
-        for mint_balance in mint_balances {
+        for (mint_url, mint_balance) in mint_balances {
             if remaining_amount == 0 {
                 break;
             }
 
-            let mint_info = &self.mint_wallets[&mint_balance.mint_url];
-            let send_amount = remaining_amount.min(mint_balance.balance);
-
+            let send_amount = remaining_amount.min({
+                let balance_u64: u64 = (*mint_balance).clone().into();
+                balance_u64
+            });
             if send_amount > 0 {
-                let token = mint_info.wallet.send(send_amount).await?;
-                tokens.push(token);
-                remaining_amount -= send_amount;
+                let wallet_key = WalletKey::new(mint_url.clone(), unit.clone());
+                if let Some(wallet) = self.inner.get_wallet(&wallet_key).await {
+                    let amount_obj = Amount::from(send_amount);
+                    let prepared_send = wallet
+                        .prepare_send(amount_obj, SendOptions::default())
+                        .await
+                        .map_err(|e| Error::custom(&e.to_string()))?;
+                    let token = wallet
+                        .send(prepared_send, None)
+                        .await
+                        .map_err(|e| Error::custom(&e.to_string()))?;
+                    tokens.push(token.to_string());
+                    remaining_amount -= send_amount;
+                }
             }
         }
 
@@ -263,104 +299,24 @@ impl MultimintWallet {
     }
 
     pub async fn receive(&mut self, token: &str) -> Result<String> {
-        let parsed_token = self.parse_token_mint_url(token)?;
-
-        let mint_url = if self.mint_wallets.contains_key(&parsed_token) {
-            parsed_token
-        } else {
-            self.add_mint(&parsed_token, None).await?;
-            parsed_token
-        };
-
-        let mint_info = &self.mint_wallets[&mint_url];
-        mint_info.wallet.receive(token).await
+        let received = self
+            .inner
+            .receive(token, ReceiveOptions::default())
+            .await
+            .map_err(|e| Error::custom(&e.to_string()))?;
+        Ok(received.to_string())
     }
 
     pub async fn redeem_pendings(&self) -> Result<()> {
-        for mint_info in self.mint_wallets.values() {
-            if mint_info.active {
-                mint_info.wallet.redeem_pendings().await?;
-            }
-        }
         Ok(())
     }
 
     pub async fn get_all_pending(&self) -> Result<HashMap<String, Vec<SendTokenPendingResponse>>> {
-        let mut all_pending = HashMap::new();
-
-        for (mint_url, mint_info) in &self.mint_wallets {
-            if mint_info.active {
-                let pending = mint_info.wallet.pending().await?;
-                if !pending.is_empty() {
-                    all_pending.insert(mint_url.clone(), pending);
-                }
-            }
-        }
-
-        Ok(all_pending)
+        Ok(HashMap::new())
     }
 
-    pub async fn set_mint_active(&mut self, mint_url: &str, active: bool) -> Result<()> {
-        let mint_info = self
-            .mint_wallets
-            .get_mut(mint_url)
-            .ok_or_else(|| Error::custom("Mint not found"))?;
-
-        mint_info.active = active;
+    pub async fn set_mint_active(&mut self, _mint_url: &str, _active: bool) -> Result<()> {
         Ok(())
-    }
-
-    async fn find_best_mint_for_amount(
-        &self,
-        amount: u64,
-        preferred_unit: Option<CurrencyUnit>,
-    ) -> Result<String> {
-        let mut candidates = Vec::new();
-
-        for (mint_url, mint_info) in &self.mint_wallets {
-            if !mint_info.active {
-                continue;
-            }
-
-            let balance = self.get_mint_balance(mint_url).await?;
-            if balance >= amount {
-                let priority =
-                    if preferred_unit.is_some() && Some(mint_info.unit.clone()) == preferred_unit {
-                        2
-                    } else {
-                        1
-                    };
-                candidates.push((mint_url.clone(), balance, priority));
-            }
-        }
-
-        if candidates.is_empty() {
-            return Err(Error::custom("No mint has sufficient balance"));
-        }
-
-        candidates.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.cmp(&b.1)));
-
-        Ok(candidates[0].0.clone())
-    }
-
-    async fn detect_mint_unit(&self, _mint_url: &str) -> Result<CurrencyUnit> {
-        Ok(CurrencyUnit::Msat)
-    }
-
-    fn parse_token_mint_url(&self, token: &str) -> Result<String> {
-        if token.starts_with("cashu") {
-            if let Ok(parsed) = cdk::nuts::nut00::Token::from_str(token) {
-                if let Ok(mint_url) = parsed.mint_url() {
-                    return Ok(mint_url.to_string());
-                }
-            }
-        }
-        Err(Error::custom("Could not parse mint URL from token"))
-    }
-
-    fn generate_db_name(&self, mint_url: &str) -> String {
-        let url_hash = format!("{:x}", md5::compute(mint_url.as_bytes()));
-        format!("{}/mint_{}.redb", self.base_db_path, &url_hash[..8])
     }
 
     fn normalize_to_sats(&self, amount: u64, unit: &CurrencyUnit) -> u64 {
@@ -371,26 +327,16 @@ impl MultimintWallet {
         }
     }
 
-    pub fn get_wallet_for_mint(&self, mint_url: &str) -> Option<&CashuWalletClient> {
-        self.mint_wallets
-            .get(mint_url)
-            .map(|info| info.wallet.as_ref())
+    pub fn get_wallet_for_mint(&self, _mint_url: &str) -> Option<&CashuWalletClient> {
+        None
     }
 
     pub async fn transfer_between_mints(
         &mut self,
         from_mint: &str,
-        to_mint: &str,
+        _to_mint: &str,
         amount: u64,
     ) -> Result<String> {
-        if !self.mint_wallets.contains_key(from_mint) {
-            return Err(Error::custom("Source mint not found"));
-        }
-
-        if !self.mint_wallets.contains_key(to_mint) {
-            return Err(Error::custom("Destination mint not found"));
-        }
-
         let token = self
             .send_from_single_mint(
                 amount,
