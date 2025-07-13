@@ -15,6 +15,7 @@ use std::time::Duration;
 use crate::error::Error;
 use ::hex;
 use base64::{Engine as _, engine::general_purpose::STANDARD as base64};
+use cdk::nuts::KeySetInfo;
 use cdk::nuts::nut00::Token;
 
 pub mod kinds {
@@ -476,7 +477,10 @@ impl Nip60Wallet {
             .mint_url()
             .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
             .to_string();
-        let proofs = parsed_token.proofs();
+        let empty_keysets: Vec<KeySetInfo> = vec![];
+        let proofs = parsed_token.proofs(&empty_keysets).map_err(|e| {
+            crate::error::Error::custom(&format!("Failed to get proofs from token: {}", e))
+        })?;
         let token_event_id = self.create_token_event(&mint_url, proofs, vec![]).await?;
         created_event_ids.push(token_event_id);
 
@@ -505,10 +509,20 @@ impl Nip60Wallet {
     }
 
     pub fn calculate_token_amount(&self, token: &Token) -> Result<u64> {
-        Ok(token
-            .proofs()
+        let _mint_url = token
+            .mint_url()
+            .map_err(|e| crate::error::Error::custom(&format!("Failed to get mint URL: {}", e)))?
+            .to_string();
+        let empty_keysets: Vec<KeySetInfo> = vec![];
+        let proofs = token.proofs(&empty_keysets).map_err(|e| {
+            crate::error::Error::custom(&format!("Failed to get proofs from token: {}", e))
+        })?;
+        Ok(proofs
             .iter()
-            .map(|proof| proof.amount.to_string().parse::<u64>().unwrap())
+            .map(|proof| {
+                let amount: u64 = proof.amount.into();
+                amount
+            })
             .sum())
     }
 
@@ -1379,7 +1393,10 @@ impl Nip60Wallet {
         })?;
 
         let new_parsed_token = self.parse_cashu_token(&new_token_string)?;
-        let final_proofs = new_parsed_token.proofs();
+        let empty_keysets: Vec<KeySetInfo> = vec![];
+        let final_proofs = new_parsed_token.proofs(&empty_keysets).map_err(|e| {
+            crate::error::Error::custom(&format!("Failed to get proofs from token: {}", e))
+        })?;
 
         let token_event_id = self
             .create_token_event(&mint_url, final_proofs, vec![])

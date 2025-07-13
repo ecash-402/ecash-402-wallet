@@ -173,7 +173,12 @@ impl WalletOperations {
         let amount = wallet.calculate_token_amount(&parsed_token)?;
         let unit = Self::get_unit_for_mint(wallet, &mint_url);
         let amount_display = Self::format_amount(amount, &unit);
-        let proof_count = parsed_token.proofs().len();
+        let proof_count = parsed_token
+            .proofs(&[])
+            .map_err(|e| {
+                crate::error::Error::custom(&format!("Failed to get proofs from token: {}", e))
+            })?
+            .len();
         let memo = parsed_token.memo().clone();
 
         Ok(TokenInfo {
