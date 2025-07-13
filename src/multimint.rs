@@ -53,8 +53,6 @@ impl Default for MultimintSendOptions {
 #[derive(Debug, Clone)]
 pub struct MultimintWallet {
     inner: CdkMultiMintWallet,
-    seed: [u8; 32],
-    base_db_path: String,
 }
 
 impl MultimintWallet {
@@ -74,11 +72,7 @@ impl MultimintWallet {
 
         let inner = CdkMultiMintWallet::new(localstore, Arc::new(seed_bytes), vec![]);
 
-        Ok(Self {
-            inner,
-            seed: seed_bytes,
-            base_db_path: base_db_path.to_string(),
-        })
+        Ok(Self { inner })
     }
 
     pub async fn from_existing_wallet(
@@ -87,14 +81,14 @@ impl MultimintWallet {
         seed: &str,
         base_db_path: &str,
     ) -> Result<Self> {
-        let mut multimint = Self::new(seed, base_db_path).await?;
+        let multimint = Self::new(seed, base_db_path).await?;
         multimint
             .add_mint(mint_url, Some(CurrencyUnit::Msat))
             .await?;
         Ok(multimint)
     }
 
-    pub async fn add_mint(&mut self, mint_url: &str, unit: Option<CurrencyUnit>) -> Result<()> {
+    pub async fn add_mint(&self, mint_url: &str, unit: Option<CurrencyUnit>) -> Result<()> {
         let currency_unit = unit.unwrap_or(CurrencyUnit::Msat);
         let _mint_url_parsed =
             MintUrl::from_str(mint_url).map_err(|e| Error::custom(&e.to_string()))?;
@@ -108,7 +102,7 @@ impl MultimintWallet {
         Ok(())
     }
 
-    pub async fn remove_mint(&mut self, mint_url: &str) -> Result<()> {
+    pub async fn remove_mint(&self, mint_url: &str) -> Result<()> {
         let balance = self.get_mint_balance(mint_url).await?;
         if balance > 0 {
             return Err(Error::custom(
@@ -298,7 +292,7 @@ impl MultimintWallet {
         Ok(tokens.join("\n"))
     }
 
-    pub async fn receive(&mut self, token: &str) -> Result<String> {
+    pub async fn receive(&self, token: &str) -> Result<String> {
         let received = self
             .inner
             .receive(token, ReceiveOptions::default())
@@ -315,7 +309,7 @@ impl MultimintWallet {
         Ok(HashMap::new())
     }
 
-    pub async fn set_mint_active(&mut self, _mint_url: &str, _active: bool) -> Result<()> {
+    pub async fn set_mint_active(&self, _mint_url: &str, _active: bool) -> Result<()> {
         Ok(())
     }
 
@@ -332,7 +326,7 @@ impl MultimintWallet {
     }
 
     pub async fn transfer_between_mints(
-        &mut self,
+        &self,
         from_mint: &str,
         _to_mint: &str,
         amount: u64,
