@@ -1,4 +1,5 @@
 pub mod error;
+pub mod lightning;
 pub mod models;
 pub mod multimint;
 pub mod wallet;
