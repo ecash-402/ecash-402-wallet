@@ -6,7 +6,7 @@ use crate::{
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
-use cashu::mint_url;
+
 use cdk::{
     Amount,
     cdk_database::{self, WalletDatabase},
@@ -35,21 +35,13 @@ pub struct MintBalance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MultimintSendOptions {
     pub preferred_mint: Option<String>,
     pub unit: Option<CurrencyUnit>,
     pub split_across_mints: bool,
 }
 
-impl Default for MultimintSendOptions {
-    fn default() -> Self {
-        Self {
-            preferred_mint: None,
-            unit: None,
-            split_across_mints: false,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct MultimintWallet {
@@ -132,7 +124,7 @@ impl MultimintWallet {
                 .map_err(|e| Error::custom(&e.to_string()))?;
 
             for (mint_url, amount) in balances {
-                let balance: u64 = amount.clone().into();
+                let balance: u64 = amount.into();
                 let normalized_balance = self.normalize_to_sats(balance, &unit);
                 total_balance += normalized_balance;
 
@@ -166,7 +158,7 @@ impl MultimintWallet {
                 .map_err(|e| Error::custom(&e.to_string()))?;
 
             if let Some(amount) = balances.get(&mint_url_parsed) {
-                return Ok(amount.clone().into());
+                return Ok((*amount).into());
             }
         }
 
@@ -218,7 +210,7 @@ impl MultimintWallet {
         let total_balance: u64 = balances
             .values()
             .map(|a| {
-                let val: u64 = (*a).clone().into();
+                let val: u64 = (*a).into();
                 val
             })
             .sum();
@@ -238,7 +230,7 @@ impl MultimintWallet {
             }
 
             let send_amount = remaining_amount.min({
-                let balance_u64: u64 = (*mint_balance).clone().into();
+                let balance_u64: u64 = (*mint_balance).into();
                 balance_u64
             });
             if send_amount > 0 {
@@ -284,7 +276,7 @@ impl MultimintWallet {
         let wallets = self.inner.get_wallets().await;
 
         let mut table: HashMap<String, Vec<SendTokenPendingResponse>> = HashMap::new();
-        for (_, wallet) in wallets.iter().enumerate() {
+        for wallet in wallets.iter() {
             let mint_url = wallet.mint_url.clone();
 
             let pending_proofs = wallet.get_pending_proofs().await?;
@@ -369,7 +361,7 @@ impl MultimintWallet {
     async fn check_and_redeem_pending(&self) -> Result<()> {
         let wallets = self.inner.get_wallets().await;
 
-        for (_i, wallet) in wallets.iter().enumerate() {
+        for wallet in wallets.iter() {
             let pending_proofs = wallet.get_pending_proofs().await?;
             if pending_proofs.is_empty() {
                 continue;

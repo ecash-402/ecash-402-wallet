@@ -10,7 +10,7 @@ use cdk::wallet::{HttpClient, ReceiveOptions, SendOptions, Wallet, WalletBuilder
 use cdk_redb::WalletRedbDatabase;
 
 pub fn prepare_seed(seed: &str) -> Result<[u8; 64]> {
-    let mnemonic = Mnemonic::from_str(&seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
+    let mnemonic = Mnemonic::from_str(seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
     Ok(mnemonic.to_seed_normalized(""))
 }
 
@@ -44,7 +44,7 @@ impl CashuWalletClient {
     pub async fn send(&self, amount: u64) -> Result<String> {
         let prepared_send = self
             .wallet
-            .prepare_send((amount as u64).into(), SendOptions::default())
+            .prepare_send(amount.into(), SendOptions::default())
             .await?;
         Ok(self.wallet.send(prepared_send, None).await?.to_string())
     }

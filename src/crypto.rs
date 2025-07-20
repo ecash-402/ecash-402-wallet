@@ -71,7 +71,7 @@ fn create_simple_blinded_message(amount: u64, keyset_id: &str) -> Result<Blinded
     let blinded_msg = BlindedMessage {
         amount: amount.into(),
         keyset_id: keyset_id_parsed,
-        blinded_secret: cdk::nuts::PublicKey::from_hex(&hex::encode(compressed_pubkey))
+        blinded_secret: cdk::nuts::PublicKey::from_hex(hex::encode(compressed_pubkey))
             .map_err(|e| Error::custom(&format!("Failed to create blinded secret: {}", e)))?,
         witness: None,
     };

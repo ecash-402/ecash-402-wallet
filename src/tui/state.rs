@@ -36,6 +36,7 @@ pub struct WalletInstance {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SendState {
     pub amount_input: String,
     pub memo_input: String,
@@ -44,6 +45,7 @@ pub struct SendState {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct RedeemState {
     pub token_input: String,
     pub result: Option<String>,
@@ -51,6 +53,7 @@ pub struct RedeemState {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct LightningState {
     pub amount_input: String,
     pub description_input: String,
@@ -60,6 +63,7 @@ pub struct LightningState {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct AddWalletState {
     pub name_input: String,
     pub nsec_input: String,
@@ -86,51 +90,9 @@ pub struct AppState {
     pub last_refresh: SystemTime,
 }
 
-impl Default for SendState {
-    fn default() -> Self {
-        Self {
-            amount_input: String::new(),
-            memo_input: String::new(),
-            generated_token: None,
-            error: None,
-        }
-    }
-}
 
-impl Default for RedeemState {
-    fn default() -> Self {
-        Self {
-            token_input: String::new(),
-            result: None,
-            error: None,
-        }
-    }
-}
 
-impl Default for LightningState {
-    fn default() -> Self {
-        Self {
-            amount_input: String::new(),
-            description_input: String::new(),
-            invoice: None,
-            qr_code: None,
-            error: None,
-        }
-    }
-}
 
-impl Default for AddWalletState {
-    fn default() -> Self {
-        Self {
-            name_input: String::new(),
-            nsec_input: String::new(),
-            mints_input: String::new(),
-            relays_input: String::new(),
-            error: None,
-            step: 0,
-        }
-    }
-}
 
 impl AppState {
     pub async fn new() -> Result<Self> {

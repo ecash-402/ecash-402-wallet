@@ -137,7 +137,7 @@ impl HistoryWidget {
 
                 let created_date = if let Some(created_at) = transaction.created_at {
                     let datetime = chrono::DateTime::from_timestamp(created_at as i64, 0)
-                        .unwrap_or_else(|| chrono::Utc::now());
+                        .unwrap_or_else(chrono::Utc::now);
                     datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
                 } else {
                     "Unknown date".to_string()
@@ -145,16 +145,14 @@ impl HistoryWidget {
 
                 let event_info = Self::extract_event_info(transaction, state);
 
-                let transaction_lines = vec![
-                    format!(
+                let transaction_lines = [format!(
                         "{}{} | {} {} | {}",
                         direction_symbol, direction_text, amount_str, event_info.unit, created_date
                     ),
                     format!(
                         "  Event: {} | Mint: {} | Unit: {}",
                         event_info.event_id, event_info.mint, event_info.unit
-                    ),
-                ];
+                    )];
 
                 ListItem::new(transaction_lines.join("\n")).style(style)
             })

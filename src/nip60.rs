@@ -203,7 +203,7 @@ impl Nip60Wallet {
 
         client.connect().await;
 
-        let mints = mints.into_iter().map(|url| url).collect();
+        let mints = mints.into_iter().collect();
         let mint_infos = HashMap::new();
 
         let mut wallet = Self {
@@ -228,7 +228,7 @@ impl Nip60Wallet {
 
         client.connect().await;
 
-        let mints = mints.into_iter().map(|url| url).collect();
+        let mints = mints.into_iter().collect();
         let mint_infos = HashMap::new();
 
         let mut wallet = Self {
@@ -283,7 +283,7 @@ impl Nip60Wallet {
     }
 
     pub fn get_mint_info_by_keyset_id(&self, keyset_id: &str) -> Option<MintInfo> {
-        for (_, mint_info) in &self.mint_infos {
+        for mint_info in self.mint_infos.values() {
             for keyset in &mint_info.keysets {
                 if keyset.id == keyset_id {
                     return Some(mint_info.clone());
@@ -806,7 +806,7 @@ impl Nip60Wallet {
         let del: Vec<String> = deleted_token_ids.iter().map(|id| id.to_hex()).collect();
 
         if let Some(mint) = &self.mints.first() {
-            self.create_token_event(&mint, unspent_proofs, del).await
+            self.create_token_event(mint, unspent_proofs, del).await
         } else {
             Err(crate::error::Error::custom("No mint configured"))
         }
@@ -1244,7 +1244,7 @@ impl Nip60Wallet {
 
     pub async fn update_config(&mut self, mints: Option<Vec<String>>) -> Result<()> {
         if let Some(mints) = mints {
-            self.mints = mints.into_iter().map(|url| url).collect();
+            self.mints = mints.into_iter().collect();
             self.initialize_mint_infos().await?;
             self.publish_wallet_config().await?;
         }
@@ -1550,7 +1550,7 @@ impl Nip60Wallet {
         let target_mints = if let Some(url) = mint_url {
             vec![url]
         } else {
-            self.mints.iter().map(|m| m.clone()).collect()
+            self.mints.to_vec()
         };
 
         for mint in &target_mints {
@@ -1669,15 +1669,15 @@ impl Nip60Wallet {
             {
                 println!("{:?}", decrypted);
                 if let Ok(wallet_data) = serde_json::from_str::<Vec<TokenEvent>>(&decrypted) {
-                    return Ok(wallet_data);
+                    Ok(wallet_data)
                 } else {
-                    return Err(Error::NotEnoughBalance("test".to_string()));
+                    Err(Error::NotEnoughBalance("test".to_string()))
                 }
             } else {
-                return Err(Error::NotEnoughBalance("test".to_string()));
+                Err(Error::NotEnoughBalance("test".to_string()))
             }
         } else {
-            return Err(Error::NotEnoughBalance("test".to_string()));
+            Err(Error::NotEnoughBalance("test".to_string()))
         }
     }
 }

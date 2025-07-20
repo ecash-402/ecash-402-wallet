@@ -13,19 +13,12 @@ pub struct WalletConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Config {
     pub wallets: Vec<WalletConfig>,
     pub active_wallet: Option<String>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            wallets: Vec::new(),
-            active_wallet: None,
-        }
-    }
-}
 
 impl Config {
     pub fn load() -> Result<Self> {
