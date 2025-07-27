@@ -35,8 +35,7 @@ pub struct WalletInstance {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SendState {
     pub amount_input: String,
     pub memo_input: String,
@@ -44,16 +43,14 @@ pub struct SendState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RedeemState {
     pub token_input: String,
     pub result: Option<String>,
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct LightningState {
     pub amount_input: String,
     pub description_input: String,
@@ -62,8 +59,7 @@ pub struct LightningState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AddWalletState {
     pub name_input: String,
     pub nsec_input: String,
@@ -89,10 +85,6 @@ pub struct AppState {
     pub error_message: Option<String>,
     pub last_refresh: SystemTime,
 }
-
-
-
-
 
 impl AppState {
     pub async fn new() -> Result<Self> {

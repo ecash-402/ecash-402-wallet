@@ -12,13 +12,11 @@ pub struct WalletConfig {
     pub active: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     pub wallets: Vec<WalletConfig>,
     pub active_wallet: Option<String>,
 }
-
 
 impl Config {
     pub fn load() -> Result<Self> {

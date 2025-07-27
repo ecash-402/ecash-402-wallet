@@ -145,14 +145,16 @@ impl HistoryWidget {
 
                 let event_info = Self::extract_event_info(transaction, state);
 
-                let transaction_lines = [format!(
+                let transaction_lines = [
+                    format!(
                         "{}{} | {} {} | {}",
                         direction_symbol, direction_text, amount_str, event_info.unit, created_date
                     ),
                     format!(
                         "  Event: {} | Mint: {} | Unit: {}",
                         event_info.event_id, event_info.mint, event_info.unit
-                    )];
+                    ),
+                ];
 
                 ListItem::new(transaction_lines.join("\n")).style(style)
             })

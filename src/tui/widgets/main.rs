@@ -172,13 +172,15 @@ impl MainWidget {
     }
 
     fn render_navigation(f: &mut Frame, area: Rect) {
-        let nav_items = ["h: History",
+        let nav_items = [
+            "h: History",
             "s: Send",
             "r: Redeem",
             "n: Lightning",
             "w: Wallets",
             "R: Refresh",
-            "Tab: Switch Wallet"];
+            "Tab: Switch Wallet",
+        ];
 
         let nav_text = nav_items.join(" | ");
         let nav_paragraph = Paragraph::new(nav_text)

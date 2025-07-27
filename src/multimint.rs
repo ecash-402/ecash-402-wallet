@@ -34,14 +34,12 @@ pub struct MintBalance {
     pub proof_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MultimintSendOptions {
     pub preferred_mint: Option<String>,
     pub unit: Option<CurrencyUnit>,
     pub split_across_mints: bool,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct MultimintWallet {
