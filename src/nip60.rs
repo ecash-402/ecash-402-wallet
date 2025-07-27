@@ -9,6 +9,7 @@ use cdk::nuts::Proofs;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -107,6 +108,20 @@ pub struct ProofBreakdown {
     pub denominations: std::collections::HashMap<u64, u32>,
 }
 
+impl Display for ProofBreakdown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {} {} ({} proofs: {})",
+            self.mint_url,
+            self.total_balance,
+            self.unit.clone().unwrap_or("sats".to_string()),
+            self.proof_count,
+            self.format_denominations()
+        )
+    }
+}
+
 impl ProofBreakdown {
     pub fn new(mint_url: String, unit: Option<String>) -> Self {
         Self {
@@ -133,17 +148,6 @@ impl ProofBreakdown {
             .map(|(amount, count)| format!("{}×{}", amount, count))
             .collect::<Vec<_>>()
             .join(", ")
-    }
-
-    pub fn to_string(&self) -> String {
-        format!(
-            "{}: {} {} ({} proofs: {})",
-            self.mint_url,
-            self.total_balance,
-            self.unit.clone().unwrap_or("sats".to_string()),
-            self.proof_count,
-            self.format_denominations()
-        )
     }
 }
 
