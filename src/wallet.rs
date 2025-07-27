@@ -7,7 +7,7 @@ use std::{str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use cdk::wallet::{HttpClient, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
-use cdk_redb::WalletRedbDatabase;
+use cdk_sqlite::WalletSqliteDatabase;
 
 pub fn prepare_seed(seed: &str) -> Result<[u8; 64]> {
     let mnemonic = Mnemonic::from_str(seed).map_err(|_| Error::custom("Invalid mnemonic seed"))?;
@@ -91,7 +91,8 @@ impl CashuWalletClient {
             })?;
         }
 
-        let localstore = WalletRedbDatabase::new(&db_path)
+        let localstore = WalletSqliteDatabase::new(&db_path)
+            .await
             .map_err(|e| Error::custom(&format!("Failed to create database: {}", e)))?;
 
         let seed = s.to_seed_normalized("");

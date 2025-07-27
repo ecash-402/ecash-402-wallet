@@ -653,23 +653,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cdk-redb"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "658ac69c117ccc52798fc5b0c2dc012d1391668d3cf086ada99467d69df4a98b"
-dependencies = [
- "async-trait",
- "cdk-common",
- "lightning-invoice",
- "redb",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "cdk-signatory"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1091,7 +1074,6 @@ dependencies = [
  "bip39",
  "cashu",
  "cdk",
- "cdk-redb",
  "cdk-sqlite",
  "chrono",
  "clap",
@@ -2764,15 +2746,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "redb"
-version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cef6a6d3a65ea334d6cdfb31fa2525c20184b7aa7bd1ad1e2e37502610d4609f"
-dependencies = [
- "libc",
 ]
 
 [[package]]
