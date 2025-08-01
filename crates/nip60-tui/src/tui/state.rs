@@ -1,6 +1,6 @@
 use crate::error::Result;
-use crate::nip60::{Nip60Wallet, ProofBreakdown, SpendingHistory, WalletState};
 use crate::tui::config::{Config, WalletConfig};
+use nip60::nip60::{Nip60Wallet, ProofBreakdown, SpendingHistory, WalletState};
 use nostr_sdk::prelude::*;
 use std::collections::HashMap;
 use std::time::SystemTime;

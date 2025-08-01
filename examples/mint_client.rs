@@ -1,6 +1,5 @@
 use cdk::nuts::CurrencyUnit;
 use ecash_402_wallet::mint::MintClient;
-use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

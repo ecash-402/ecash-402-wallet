@@ -1,6 +1,7 @@
 use crate::error::Result;
-use crate::mint::{KeysetInfo, MintClient};
-use crate::wallet::CashuWalletClient;
+use ecash_402_wallet::mint::{KeysetInfo, MintClient};
+use ecash_402_wallet::wallet::CashuWalletClient;
+
 use bip39::Mnemonic;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
@@ -15,9 +16,9 @@ use std::time::Duration;
 
 use crate::error::Error;
 use ::hex;
-use base64::{Engine as _, engine::general_purpose::STANDARD as base64};
-use cdk::nuts::KeySetInfo;
+use base64::{engine::general_purpose::STANDARD as base64, Engine as _};
 use cdk::nuts::nut00::Token;
+use cdk::nuts::KeySetInfo;
 
 pub mod kinds {
     use nostr_sdk::Kind;
@@ -168,7 +169,7 @@ impl std::fmt::Debug for Nip60Wallet {
 
 impl MintInfo {
     pub async fn from_url(url: String) -> Result<Self> {
-        let client = MintClient::new(&url)?;
+        let client = MintClient::new(&url).unwrap();
 
         let keysets = match client.get_keysets().await {
             Ok(response) => response.keysets,
@@ -1370,7 +1371,10 @@ impl Nip60Wallet {
             crate::error::Error::custom(&format!("Failed to generate mnemonic: {}", e))
         })?;
         let temp_seed = temp_mnemonic.to_string();
-        let temp_db_name = format!("temp_redeem_{}", crate::crypto::generate_random_secret());
+        let temp_db_name = format!(
+            "temp_redeem_{}",
+            ecash_402_wallet::crypto::generate_random_secret()
+        );
 
         let temp_wallet =
             CashuWalletClient::from_seed_with_unit(&mint_url, &temp_seed, &temp_db_name, mint_unit)

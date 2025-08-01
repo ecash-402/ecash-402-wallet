@@ -170,7 +170,7 @@ impl HistoryWidget {
     }
 
     fn extract_event_info(
-        transaction: &crate::nip60::SpendingHistory,
+        transaction: &nip60::nip60::SpendingHistory,
         state: &AppState,
     ) -> EventInfo {
         let mut event_id = "N/A".to_string();

@@ -1,0 +1,27 @@
+[package]
+name = "nip60-tui"
+version.workspace = true
+description = "nip-60 tui"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+readme = "README.md"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.29"
+qrcode = "0.14"
+arboard = "3.4"
+
+nip60 = {path="../nip60/"}
+ecash-402-wallet = {path="../wallet/"}
+
+serde.workspace = true
+serde_json.workspace = true
+derive_more.workspace = true
+cdk.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+nostr-sdk.workspace = true
+serde_yaml.workspace = true
+dirs.workspace = true

@@ -1,7 +1,7 @@
 use cashu::CurrencyUnit;
 use clap::{Parser, Subcommand};
-use ecash_402_wallet::nip60::Nip60Wallet;
-use ecash_402_wallet::wallet_operations::WalletOperations;
+use nip60::nip60::Nip60Wallet;
+use nip60::wallet_operations::WalletOperations;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -730,9 +730,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let recipient_pk = PublicKey::from_str(&recipient)?;
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let token = wallet
-                    .send_to_pubkey(recipient_pk, amount, memo.map(String::from))
-                    .await?;
+                let token = wallet.send_to_pubkey(recipient_pk, amount, memo).await?;
                 println!("Token sent successfully: {}", token);
             } else {
                 println!("No wallet found");
@@ -745,7 +743,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_refs: Vec<&str> = local_config.relays.iter().map(|s| s.as_str()).collect();
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
-                let token = wallet.send_to_self(amount, memo.map(String::from)).await?;
+                let token = wallet.send_to_self(amount, memo).await?;
                 println!("Token created successfully: {}", token);
             } else {
                 println!("No wallet found");
@@ -777,7 +775,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Memo: {}", memo_text);
                 }
 
-                match wallet.send(amount, memo.map(String::from)).await {
+                match wallet.send(amount, memo).await {
                     Ok(token) => {
                         println!("✅ Token created successfully!");
                         println!("Token: {}", token);
@@ -819,11 +817,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(wallet) = Nip60Wallet::load_from_nostr(keys, relay_refs.clone()).await? {
                 let token = wallet
-                    .send_with_target_mint(
-                        amount,
-                        target_mint.map(String::from),
-                        memo.map(String::from),
-                    )
+                    .send_with_target_mint(amount, target_mint, memo)
                     .await?;
                 println!("Token created successfully: {}", token);
             } else {
@@ -939,7 +933,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  - URL: {}", mint.url);
                     println!("    Unit: {}", mint.unit);
                 }
-                if let Some(_) = config.default_private_key {
+                if config.default_private_key.is_some() {
                     println!("\nDefault private key: [SET]");
                 } else {
                     println!("\nDefault private key: [NOT SET]");

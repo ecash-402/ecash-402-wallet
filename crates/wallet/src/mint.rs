@@ -570,7 +570,11 @@ impl MintClient {
             .zip(spent_states.iter())
             .filter_map(
                 |(proof, &is_spent)| {
-                    if !is_spent { Some(proof.clone()) } else { None }
+                    if !is_spent {
+                        Some(proof.clone())
+                    } else {
+                        None
+                    }
                 },
             )
             .collect();

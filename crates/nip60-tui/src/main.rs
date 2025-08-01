@@ -1,4 +1,4 @@
-use ecash_402_wallet::tui;
+use nip60_tui::tui;
 use std::error::Error;
 
 #[tokio::main]

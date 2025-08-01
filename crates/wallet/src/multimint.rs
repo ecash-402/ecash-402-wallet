@@ -8,14 +8,14 @@ use std::{collections::HashMap, str::FromStr, sync::Arc};
 use bip39::Mnemonic;
 
 use cdk::{
-    Amount,
     cdk_database::{self, WalletDatabase},
     mint_url::MintUrl,
     nuts::CurrencyUnit,
     wallet::{
-        ReceiveOptions, SendOptions, multi_mint_wallet::MultiMintWallet as CdkMultiMintWallet,
-        types::WalletKey,
+        multi_mint_wallet::MultiMintWallet as CdkMultiMintWallet, types::WalletKey, ReceiveOptions,
+        SendOptions,
     },
+    Amount,
 };
 use cdk_sqlite::WalletSqliteDatabase;
 use serde::{Deserialize, Serialize};
