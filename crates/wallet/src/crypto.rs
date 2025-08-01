@@ -54,7 +54,7 @@ fn create_simple_blinded_message(amount: u64, keyset_id: &str) -> Result<Blinded
     let mut secret_bytes = [0u8; 32];
     rng.fill_bytes(&mut secret_bytes);
 
-    let secret_key = SecretKey::from_slice(&secret_bytes)
+    let secret_key = SecretKey::from_byte_array(secret_bytes)
         .map_err(|e| Error::custom(&format!("Failed to create secret key: {}", e)))?;
 
     // Generate the corresponding public key
