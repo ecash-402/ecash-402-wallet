@@ -327,6 +327,43 @@ impl MultimintWallet {
         None
     }
 
+    pub async fn get_wallet_for_mint_with_token(
+        &self,
+        mint_url: &str,
+        token: &str,
+    ) -> Option<cdk::wallet::Wallet> {
+        use cdk::nuts::{CurrencyUnit as TokenCurrencyUnit, Token};
+
+        let mint_url_parsed = match MintUrl::from_str(mint_url) {
+            Ok(url) => url,
+            Err(_) => return None,
+        };
+
+        if let Ok(parsed_token) = Token::from_str(token) {
+            let unit = match parsed_token.unit() {
+                Some(TokenCurrencyUnit::Sat) => CurrencyUnit::Sat,
+                Some(TokenCurrencyUnit::Msat) => CurrencyUnit::Msat,
+                Some(TokenCurrencyUnit::Usd) => CurrencyUnit::Usd,
+                Some(TokenCurrencyUnit::Eur) => CurrencyUnit::Eur,
+                _ => CurrencyUnit::Sat,
+            };
+
+            let wallet_key = WalletKey::new(mint_url_parsed.clone(), unit);
+            if let Some(wallet) = self.inner.get_wallet(&wallet_key).await {
+                return Some(wallet);
+            }
+        }
+
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat] {
+            let wallet_key = WalletKey::new(mint_url_parsed.clone(), unit);
+            if let Some(wallet) = self.inner.get_wallet(&wallet_key).await {
+                return Some(wallet);
+            }
+        }
+
+        None
+    }
+
     pub fn get_wallet_for_mint_sync(&self, _mint_url: &str) -> Option<&CashuWalletClient> {
         // This function is kept for backwards compatibility but returns None
         // Use get_wallet_for_mint instead for actual functionality
