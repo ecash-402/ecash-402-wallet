@@ -7,7 +7,7 @@ members = [ "nip60", "wallet", "nip60-cli","nip60-tui"]
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/ecash-402/ecash-402-wallet.git"
-version = "0.1.22"
+version = "0.1.23"
 readme = "README.md"
 
 [workspace.dependencies]

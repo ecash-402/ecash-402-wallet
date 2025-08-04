@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "ecash-402-wallet"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2120,7 +2120,7 @@ checksum = "f0efe882e02d206d8d279c20eb40e03baf7cb5136a1476dc084a324fbc3ec42d"
 
 [[package]]
 name = "nip60"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "nip60-cli"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "cashu",
  "cdk",
@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "nip60-tui"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "arboard",
  "cdk",
